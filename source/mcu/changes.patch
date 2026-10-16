@@ -1,0 +1,593 @@
+diff --git a/components/battery/battery.c b/components/battery/battery.c
+index bdd5ff5..4685fd3 100644
+--- a/components/battery/battery.c
++++ b/components/battery/battery.c
+@@ -115,6 +115,7 @@ typedef struct Battery {
+     float battRawLevel_V;
+     BatteryKind_t eBattKind;
+     LipoChargeStatus_t LiPoIsCharging;
++    bool haveSample;
+     bool firstDraw;
+     lv_obj_t * battBorderImage;
+     TickType_t BootTime_ticks;
+@@ -257,12 +258,51 @@ void Battery_UpdateVoltage(const float batt_V, const BatteryKind_t eKind)
+             #endif
+ 
+             _ctx.eBattKind = eKind;
++            _ctx.haveSample = true;
+ 
+             (void) Mutex_Give(kMutexKey_Battery);
+         }
+     }
+ }
+ 
++bool Battery_Read(uint8_t *percent, uint16_t *millivolts, bool *lipo, bool *charging)
++{
++    bool known = false;
++    uint8_t pct = 0;
++    uint16_t mv = 0;
++    bool is_lipo = false;
++    bool is_charging = false;
++
++    if (Mutex_Take(kMutexKey_Battery) == kMutexResult_Ok)
++    {
++        float level = _ctx.battLevel_V;
++        BatteryKind_t kind = _ctx.eBattKind;
++        known = _ctx.haveSample && level >= kLevel_MinValid_V && (unsigned)kind < kNumBatteryKind;
++        if (known)
++        {
++            const Thresholds_t *threshold = &_Thresholds[kind];
++            float span = threshold->Level_High - threshold->Level_Depleted;
++            float value = span > 0.0f ? (level - threshold->Level_Depleted) / span * 100.0f : 0.0f;
++            if (value < 0.0f) value = 0.0f;
++            if (value > 100.0f) value = 100.0f;
++            pct = (uint8_t)(value + 0.5f);
++            float volts = level * 1000.0f;
++            if (volts < 0.0f) volts = 0.0f;
++            if (volts > 65535.0f) volts = 65535.0f;
++            mv = (uint16_t)(volts + 0.5f);
++            is_lipo = kind == kBatteryKind_LiPo;
++            is_charging = is_lipo && _ctx.LiPoIsCharging == kLipoChargeStatus_Enabled;
++        }
++        (void) Mutex_Give(kMutexKey_Battery);
++    }
++
++    if (percent) *percent = pct;
++    if (millivolts) *millivolts = mv;
++    if (lipo) *lipo = is_lipo;
++    if (charging) *charging = is_charging;
++    return known;
++}
++
+ void Battery_SetChargingStatus(const bool IsCharging)
+ {
+     #ifdef BATT_DISP_TEST
+diff --git a/components/battery/battery.h b/components/battery/battery.h
+index e255924..9763dfa 100644
+--- a/components/battery/battery.h
++++ b/components/battery/battery.h
+@@ -18,3 +18,4 @@ typedef enum LiPoChargeStatus {
+ OSD_Result_t Battery_Init(OSD_Widget_t *const pWidget);
+ void Battery_UpdateVoltage(const float batt_V, const BatteryKind_t eKind);
+ void Battery_SetChargingStatus(const bool IsCharging);
++bool Battery_Read(uint8_t *percent, uint16_t *millivolts, bool *lipo, bool *charging);
+diff --git a/components/button/button.c b/components/button/button.c
+index 0f62a1c..7e2d161 100644
+--- a/components/button/button.c
++++ b/components/button/button.c
+@@ -92,7 +92,7 @@ void Button_ResetAll(void)
+ 
+ ButtonState_t Button_GetState(const Button_t b)
+ {
+-    if (((unsigned)b >= kNumButtons) || (b == kButton_Select))
++    if ((unsigned)b >= kNumButtons)
+     {
+         return kButtonState_None;
+     }
+@@ -110,6 +110,17 @@ ButtonState_t Button_GetState(const Button_t b)
+     return s;
+ }
+ 
++uint16_t Button_GetHeld(void)
++{
++    uint16_t held = 0;
++    if (Mutex_Take(kMutexKey_Buttons) == kMutexResult_Ok)
++    {
++        held = _PrevButtons;
++        (void) Mutex_Give(kMutexKey_Buttons);
++    }
++    return held;
++}
++
+ const char* Button_GetNameStr(const Button_t b)
+ {
+     if (((unsigned)b >= kNumButtons))
+@@ -172,6 +183,19 @@ uint16_t Button_GetPokedInputs(void)
+     return (uint16_t) Input;
+ }
+ 
++void Button_Poke(const ButtonBits_t Inputs)
++{
++    if (_PokedInputsHandle == NULL)
++    {
++        _PokedInputsHandle = xQueueCreateStatic(kPokedInputsQLen, sizeof(_PokedInputBuffer[0]), (uint8_t*)_PokedInputBuffer, &_PokedInputsQueue);
++        configASSERT(_PokedInputsHandle);
++    }
++    if ((xQueueSend(_PokedInputsHandle, &Inputs, pdMS_TO_TICKS(1)) == pdPASS) && (_PokeHandler != NULL))
++    {
++        _PokeHandler();
++    }
++}
++
+ void Button_RegisterOnButtonPokeCb(fnOnButtonPokeCb_t Handler)
+ {
+     if (Handler == NULL)
+diff --git a/components/button/button.h b/components/button/button.h
+index cadfa63..66a56f9 100644
+--- a/components/button/button.h
++++ b/components/button/button.h
+@@ -41,9 +41,11 @@ typedef void (*fnOnButtonPokeCb_t)(void);
+ 
+ void Button_Update(const uint16_t NewButtons);
+ ButtonState_t Button_GetState(const Button_t b);
++uint16_t Button_GetHeld(void);
+ const char* Button_GetNameStr(const Button_t b);
+ const char* Button_GetStateStr(const ButtonState_t s);
+ void Button_ResetAll(void);
+ void Button_RegisterOnButtonPokeCb(fnOnButtonPokeCb_t Handler);
+ uint16_t Button_GetPokedInputs(void);
++void Button_Poke(const ButtonBits_t Inputs);
+ void Button_RegisterCommands(void);
+diff --git a/components/menu_mgr/menu_mgr.c b/components/menu_mgr/menu_mgr.c
+index dec93c9..d8047e0 100644
+--- a/components/menu_mgr/menu_mgr.c
++++ b/components/menu_mgr/menu_mgr.c
+@@ -43,7 +43,7 @@ OSD_Result_t MenuMgr_Initialize(OSD_Widget_t* const pWidget, lv_obj_t *const pSc
+     pWidget->fnOnButton = MenuMgr_OnButton;
+     pWidget->fnOnTransition = MenuMgr_OnTransition;
+ 
+-    _Ctx.eCurTab = kTabID_First;
++    _Ctx.eCurTab = kTabID_Korta;
+ 
+     return kOSD_Result_Ok;
+ }
+@@ -147,15 +147,26 @@ static OSD_Result_t MenuMgr_OnButton(const Button_t Button, const ButtonState_t
+         case kButton_Left:
+             if (State == kButtonState_Pressed)
+             {
+-                MenuMgr_PrevTab();
++                if (pTab->CapturesLeftRight && pTab->Widget.fnOnButton != NULL)
++                    pTab->Widget.fnOnButton(Button, State, pTab->Menu);
++                else
++                    MenuMgr_PrevTab();
+             }
+             break;
+         case kButton_Right:
+             if (State == kButtonState_Pressed)
+             {
+-                MenuMgr_NextTab();
++                if (pTab->CapturesLeftRight && pTab->Widget.fnOnButton != NULL)
++                    pTab->Widget.fnOnButton(Button, State, pTab->Menu);
++                else
++                    MenuMgr_NextTab();
+             }
+             break;
++        case kButton_Start:
++        case kButton_Select:
++            if (pTab->CapturesLeftRight && pTab->Widget.fnOnButton != NULL)
++                pTab->Widget.fnOnButton(Button, State, pTab->Menu);
++            break;
+         default:
+             break;
+     }
+@@ -191,6 +202,18 @@ static void MenuMgr_PrevTab(void)
+     _Ctx.eCurTab = ePrevID;
+ }
+ 
++void MenuMgr_ShowTab(TabID_t eID)
++{
++    if ((unsigned)eID >= kNumTabIDs || _Ctx.pMenus[eID] == NULL || eID == _Ctx.eCurTab) return;
++    (void)MenuMgr_OnTransition(NULL);
++    _Ctx.eCurTab = eID;
++}
++
++TabID_t MenuMgr_CurrentTab(void)
++{
++    return _Ctx.eCurTab;
++}
++
+ static OSD_Result_t MenuMgr_OnTransition(void *arg)
+ {
+     (void) arg;
+diff --git a/components/menu_mgr/menu_mgr.h b/components/menu_mgr/menu_mgr.h
+index 75e85b5..36b0eff 100644
+--- a/components/menu_mgr/menu_mgr.h
++++ b/components/menu_mgr/menu_mgr.h
+@@ -4,6 +4,7 @@
+ #include "lvgl.h"
+ #include "osd_shared.h"
+ #include "tab_shared.h"
++#include <stdbool.h>
+ 
+ typedef enum TabID {
+     kTabID_Status,
+@@ -11,6 +12,7 @@ typedef enum TabID {
+     kTabID_Controls,
+     kTabID_Palette,
+     kTabID_System,
++    kTabID_Korta,
+     kNumTabIDs,
+ 
+     kTabID_First = 0,
+@@ -34,7 +36,11 @@ typedef struct MenuTab {
+         TabCollection_t* Menu;
+     };
+ 
++    bool CapturesLeftRight;
++
+ } MenuTab_t;
+ 
+ OSD_Result_t MenuMgr_Initialize(OSD_Widget_t* const pWidget, lv_obj_t *const pScreen);
+ OSD_Result_t MenuMgr_AddTab(TabID_t eID, MenuTab_t *const pTab);
++void MenuMgr_ShowTab(TabID_t eID);
++TabID_t MenuMgr_CurrentTab(void);
+diff --git a/components/osd/CMakeLists.txt b/components/osd/CMakeLists.txt
+index 14fdd15..2c9302d 100644
+--- a/components/osd/CMakeLists.txt
++++ b/components/osd/CMakeLists.txt
+@@ -12,6 +12,10 @@ idf_component_register(SRCS
+                         "display/screen_transit_ctl.c"
+                         "osd.c"
+                         "osd_default.c"
++                        "kortamod_core.c"
++                        "kortamod_link.c"
++                        "kortamod_port.c"
++                        "kortamod_sfx.c"
+                         "status/brightness.c"
+                         "status/fw.c"
+                         "system/silent.c"
+@@ -24,5 +28,5 @@ idf_component_register(SRCS
+                         "palette/"
+                         "display/"
+                         "system/"
+-                    REQUIRES battery common dlist menu_mgr
+-                    PRIV_REQUIRES esp_app_format settings console efuse)
++                    REQUIRES battery common dlist menu_mgr button
++                    PRIV_REQUIRES esp_app_format settings console efuse esp_wifi esp_event esp_netif lwip nvs_flash esp_timer driver)
+diff --git a/components/osd/osd.c b/components/osd/osd.c
+index 0e0ebe0..7bb4a0e 100644
+--- a/components/osd/osd.c
++++ b/components/osd/osd.c
+@@ -1,6 +1,7 @@
+ #include "osd.h"
+ 
+ #include "button.h"
++#include "kortamod_port.h"
+ #include "color.h"
+ #include "dlist.h"
+ #include "osd_shared.h"
+@@ -88,6 +89,8 @@ void OSD_Draw(void* arg)
+ 
+ void OSD_HandleInputs(void)
+ {
++    Korta_Poll();
++
+     sys_dnode_t* pNode = NULL;
+ 
+     SYS_DLIST_FOR_EACH_NODE(&OSD.WidgetList, pNode)
+diff --git a/components/osd/osd_default.c b/components/osd/osd_default.c
+index 2cb471b..648ca47 100644
+--- a/components/osd/osd_default.c
++++ b/components/osd/osd_default.c
+@@ -1,4 +1,5 @@
+ #include "osd_default.h"
++#include "kortamod_port.h"
+ 
+ #include "battery.h"
+ #include "menu_mgr.h"
+@@ -37,6 +38,7 @@ static void CreateMenuDisplay(lv_obj_t *const pScreen);
+ static void CreateMenuControls(lv_obj_t *const pScreen);
+ static void CreateMenuPalette(lv_obj_t *const pScreen);
+ static void CreateMenuSystem(lv_obj_t *const pScreen);
++static void CreateMenuKorta(lv_obj_t *const pScreen);
+ 
+ void OSD_Default_Init(lv_obj_t *const pScreen)
+ {
+@@ -67,6 +69,7 @@ void OSD_Default_Init(lv_obj_t *const pScreen)
+     CreateMenuControls(pScreen);
+     CreateMenuPalette(pScreen);
+     CreateMenuSystem(pScreen);
++    CreateMenuKorta(pScreen);
+ 
+     OSD_AddWidget(&Battery);
+     OSD_AddWidget(&MenuMgr);
+@@ -74,6 +77,25 @@ void OSD_Default_Init(lv_obj_t *const pScreen)
+     ESP_LOGI(TAG, "Default OSD init OK");
+ }
+ 
++static void CreateMenuKorta(lv_obj_t *const pScreen)
++{
++    (void)pScreen;
++    static MenuTab_t tab = {
++        .Widget = {
++            .Name = "KortaMod",
++            .fnDraw = Korta_Draw,
++            .fnOnButton = Korta_OnButton,
++            .fnOnTransition = Korta_OnTransition,
++        },
++        .pImageDesc = &menu_system,
++        .CapturesLeftRight = true,
++    };
++    tab.Accent = lv_color_make(0xE4, 0xB9, 0x6B);
++    const OSD_Result_t result = MenuMgr_AddTab(kTabID_Korta, &tab);
++    if (result != kOSD_Result_Ok)
++        ESP_LOGE(TAG, "KortaMod tab init failed %d", result);
++}
++
+ static void CreateMenuStatus(lv_obj_t *const pScreen)
+ {
+     static TabCollection_t StatusList;
+diff --git a/components/osd/status/fw.c b/components/osd/status/fw.c
+index baf0664..8c577d0 100644
+--- a/components/osd/status/fw.c
++++ b/components/osd/status/fw.c
+@@ -243,6 +243,12 @@ void Firmware_SetFPGAVersion(uint8_t VersionMajor, uint8_t VersionMinor, uint8_t
+     _Ctx.FPGA_IsDebugBuild = IsDebug;
+ }
+ 
++void Firmware_GetFPGA(uint8_t *major, uint8_t *minor)
++{
++    if (major) *major = _Ctx.FPGAVersionMajor;
++    if (minor) *minor = _Ctx.FPGAVersionMinor;
++}
++
+ OSD_Result_t Firmware_Initialize(void)
+ {
+     OSD_Result_t eResult = kOSD_Result_Ok;
+diff --git a/components/osd/status/fw.h b/components/osd/status/fw.h
+index 08f5360..5c83ab3 100644
+--- a/components/osd/status/fw.h
++++ b/components/osd/status/fw.h
+@@ -5,5 +5,6 @@
+ OSD_Result_t Firmware_Draw(void* arg);
+ OSD_Result_t Firmware_OnTransition(void* arg);
+ void Firmware_SetFPGAVersion(uint8_t VersionMajor, uint8_t VersionMinor, uint8_t IsDebug);
++void Firmware_GetFPGA(uint8_t *major, uint8_t *minor);
+ OSD_Result_t Firmware_Initialize(void);
+ OSD_Result_t Firmware_OnButton(const Button_t Button, const ButtonState_t State, void *arg);
+diff --git a/components/settings/settings.c b/components/settings/settings.c
+index 3202db6..f333b09 100644
+--- a/components/settings/settings.c
++++ b/components/settings/settings.c
+@@ -136,6 +136,23 @@ OSD_Result_t Settings_Update(const SettingKey_t eKey, const uint32_t Value)
+     return kOSD_Result_Ok;
+ }
+ 
++OSD_Result_t Settings_Commit(void)
++{
++    if (_Handle == kNoHandle)
++    {
++        return kOSD_Result_Err_SettingsNVSNotLoaded;
++    }
++
++    esp_err_t esp_err = nvs_commit(_Handle);
++    if (esp_err != ESP_OK)
++    {
++        ESP_LOGE(TAG, "Settings commit failed: %s", esp_err_to_name(esp_err));
++        return kOSD_Result_Err_SettingUpdateFailed;
++    }
++
++    return kOSD_Result_Ok;
++}
++
+ OSD_Result_t Settings_Retrieve(const SettingKey_t eKey, uint32_t *const pValue)
+ {
+     if ((unsigned)eKey >= kNumSettingKeys)
+diff --git a/components/settings/settings.h b/components/settings/settings.h
+index a8052d2..42dde94 100644
+--- a/components/settings/settings.h
++++ b/components/settings/settings.h
+@@ -43,6 +43,7 @@ typedef OSD_Result_t (*fnSettingApply_t)(SettingValue_t const *const pValue);
+ 
+ OSD_Result_t Settings_Initialize(void);
+ OSD_Result_t Settings_Update(const SettingKey_t eKey, const uint32_t Value);
++OSD_Result_t Settings_Commit(void);
+ OSD_Result_t Settings_Retrieve(const SettingKey_t eKey, uint32_t *const pValue);
+ const char* Settings_GetNVSNamespace(void);
+ const char* Settings_KeyToName(const SettingKey_t eKey);
+diff --git a/main/fpga_rx.c b/main/fpga_rx.c
+index ef4d13d..84defe9 100644
+--- a/main/fpga_rx.c
++++ b/main/fpga_rx.c
+@@ -15,6 +15,7 @@
+ #include "freertos/task.h"
+ #include "fw.h"
+ #include "osd.h"
++#include "kortamod_port.h"
+ #include "pwrmgr.h"
+ #include "player_num.h"
+ #include "silent.h"
+@@ -301,13 +302,12 @@ static void ProcessMessage(const RxMsg_t *const pMsg)
+         }
+         case kRxCmd_Buttons:
+             Button_Update(rxdata);
+-            if ((rxdata & kButtonBits_MenuEnAlt) != 0 || (rxdata & kButtonBits_MenuEn) != 0)
++            if (rxdata & kButtonBits_MenuEn)
+             {
+                 OSD_SetVisiblityState(false);
+             }
+-            else
++            else if ((rxdata & kButtonBits_MenuEnAlt) == 0)
+             {
+-                // Hack: If we're getting button data, then the OSD is displayed
+                 OSD_SetVisiblityState(true);
+             }
+             break;
+@@ -319,7 +319,7 @@ static void ProcessMessage(const RxMsg_t *const pMsg)
+             const uint8_t headphone = (rxdata >> 7) & 0x1;
+             const uint8_t lcd_brightness = rxdata >> 8;
+ 
+-            (void)volume;
++            Korta_OnVolume((uint8_t)volume);
+             (void)headphone;
+ 
+             // Ignore this when the OSD is active since the MCU always has the latest brightness value
+diff --git a/main/fpga_tx.c b/main/fpga_tx.c
+index 1216f8a..709ab8e 100644
+--- a/main/fpga_tx.c
++++ b/main/fpga_tx.c
+@@ -21,6 +21,7 @@
+ #include "style.h"
+ 
+ #include <stddef.h>
++#include <stdbool.h>
+ #include <stdint.h>
+ #include <string.h>
+ 
+@@ -69,6 +70,13 @@ static EventGroupHandle_t xEventGroupHandle;
+ // Declare a variable to hold the data associated with the created event group.
+ static StaticEventGroup_t xCreatedEventGroup;
+ static const char* TAG = "FpgaTx";
++static bool menu_mute;
++
++void FPGA_Tx_SetMenuMute(bool muted)
++{
++    bool previous = __atomic_exchange_n(&menu_mute, muted, __ATOMIC_ACQ_REL);
++    if (previous != muted) FPGA_Tx_SendSysCtl();
++}
+ 
+ static size_t SetupTxBuffer(uint8_t *const pBuffer, TxIDs_t eID, uint8_t Len, void* pData);
+ 
+@@ -116,7 +124,8 @@ void FPGA_TxTask(void *arg)
+         if ((EventBits & kTxFlag_SetSysCtl) == kTxFlag_SetSysCtl)
+         {
+             const uint16_t frame_blending = (uint8_t)(FrameBlend_GetState() == kFrameBlendState_On);
+-            const uint16_t ismuted        = (uint8_t)(SilentMode_GetState() == kSilentModeState_On);
++            const uint16_t ismuted        = (uint8_t)(SilentMode_GetState() == kSilentModeState_On
++                || __atomic_load_n(&menu_mute, __ATOMIC_ACQUIRE));
+             const uint16_t playernum      = PlayerNum_GetNum();
+             const uint16_t color_correct  = (
+                 ((uint16_t)(ColorCorrectLCD_GetState() == kColorCorrectLCDState_On) << 0) |
+diff --git a/main/fpga_tx.h b/main/fpga_tx.h
+index 4fd22f7..7e3fe36 100644
+--- a/main/fpga_tx.h
++++ b/main/fpga_tx.h
+@@ -1,4 +1,5 @@
+ #pragma once
++#include <stdbool.h>
+ 
+ typedef enum {
+     kFPGA_TxConsts_BufferSize = 1024,    // [bytes]
+@@ -10,5 +11,6 @@ void FPGA_Tx_Pause(void);
+ void FPGA_Tx_SendAll(void);
+ void FPGA_Tx_WriteBrightness(void);
+ void FPGA_Tx_SendSysCtl(void);
++void FPGA_Tx_SetMenuMute(bool muted);
+ void FPGA_Tx_PokeButtons(void);
+-void FPGA_Tx_WritePaletteStyle(void);
+\ No newline at end of file
++void FPGA_Tx_WritePaletteStyle(void);
+diff --git a/main/main.c b/main/main.c
+index 8c98f78..f7a7d63 100644
+--- a/main/main.c
++++ b/main/main.c
+@@ -25,6 +25,7 @@
+ #include "fw.h"
+ #include "osd.h"
+ #include "osd_default.h"
++#include "kortamod_port.h"
+ #include "low_batt_icon_ctl.h"
+ #include "style.h"
+ #include "player_num.h"
+@@ -71,6 +72,8 @@ static lv_disp_t *disp;
+ #define PIXELSPERXFER 16*ROWS_PER_XFER_X10
+ #define BYTESPERXFER PIXELSPERXFER*2
+ 
++static DMA_ATTR lv_color_t buffy[160 * 144];
++
+ static void notify_lvgl_flush_ready(spi_transaction_t *pTransaction)
+ {
+     static int rownum = 0;
+@@ -87,8 +90,13 @@ static void notify_lvgl_flush_ready(spi_transaction_t *pTransaction)
+ 
+ static void example_lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map)
+ {
+-    // copy a buffer's content to a specific area of the display
+-    send_lines(spi, 0, drv->draw_buf->buf1);
++    (void)drv;
++    (void)area;
++    (void)color_map;
++    /* Stock widgets may have drawn into buffy. The shell replaces the whole
++     * frame when it is the current tab, then the transfer below ships it. */
++    Korta_Paint((uint16_t *)buffy);
++    send_lines(spi, 0, (uint16_t *)buffy);
+ }
+ 
+ static void lvgl_tick(void *arg)
+@@ -107,8 +115,6 @@ static void lvglTimerTask(void* param)
+     }
+ }
+ 
+-static DMA_ATTR lv_color_t buffy[160*144];
+-
+ static void send_lines(spi_device_handle_t spi, int ypos, uint16_t *linedata)
+ {
+     esp_err_t ret;
+diff --git a/main/pwrmgr.c b/main/pwrmgr.c
+index 439241c..8c615d8 100644
+--- a/main/pwrmgr.c
++++ b/main/pwrmgr.c
+@@ -12,6 +12,7 @@
+ #include "fpga_tx.h"
+ #include "freertos/FreeRTOS.h"
+ #include "freertos/task.h"
++#include "kortamod_link.h"
+ #include "osd.h"
+ 
+ #include <stdbool.h>
+@@ -127,6 +128,10 @@ void PwrMgr_IdleTimerPet(void)
+ static void IdleTimerCB( TimerHandle_t xTimer )
+ {
+     (void)xTimer;
++    if (KortaLink_RadioOn()) {
++        if (IdleSystemTimer != NULL) (void)xTimerReset(IdleSystemTimer, 0);
++        return;
++    }
+     PwrMgr_TriggerLightSleep();
+ }
+ 
+diff --git a/sdkconfig.defaults b/sdkconfig.defaults
+index b6612ec..9259fe0 100644
+--- a/sdkconfig.defaults
++++ b/sdkconfig.defaults
+@@ -2,7 +2,7 @@
+ # Espressif IoT Development Framework (ESP-IDF) 5.3.0 Project Minimal Configuration
+ #
+ CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
+-CONFIG_APP_PROJECT_VER="0.13.4"
++CONFIG_APP_PROJECT_VER="0.13.4-korta3"
+ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+ CONFIG_CHROMATIC_FW_VER_STR="4.2"
+ CONFIG_CONSOLE_SORTED_HELP=y
+@@ -11,5 +11,19 @@ CONFIG_LOG_DEFAULT_LEVEL_NONE=y
+ CONFIG_LV_COLOR_CHROMA_KEY_HEX=0xFF00FF
+ CONFIG_LV_USE_ASSERT_STYLE=y
+ CONFIG_LV_SPRINTF_USE_FLOAT=y
+-CONFIG_LV_FONT_MONTSERRAT_26=y
+-CONFIG_LV_FONT_MONTSERRAT_28=y
++# STA only. WPA2 and WPA3-SAE stay. No SoftAP, enterprise, IPv6, or unused LVGL widgets.
++CONFIG_NEWLIB_NANO_FORMAT=y
++# CONFIG_LWIP_IPV6 is not set
++# CONFIG_ESP_WIFI_SOFTAP_SUPPORT is not set
++# CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT is not set
++# CONFIG_ESP_WIFI_ENABLE_SAE_PK is not set
++# CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_STA is not set
++CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
++CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
++CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
++CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
++CONFIG_MBEDTLS_ECP_DP_SECP256R1_ENABLED=y
++# CONFIG_LV_BUILD_EXAMPLES is not set
++# CONFIG_LV_USE_CHART is not set
++# CONFIG_LV_FONT_MONTSERRAT_26 is not set
++# CONFIG_LV_FONT_MONTSERRAT_28 is not set

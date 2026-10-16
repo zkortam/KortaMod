@@ -1,0 +1,67 @@
+diff --git a/esp32t/evt1_x2.gprj b/esp32t/evt1_x2.gprj
+index 6a38908..184551f 100644
+--- a/esp32t/evt1_x2.gprj
++++ b/esp32t/evt1_x2.gprj
+@@ -14,6 +14,7 @@
+         <File path="src/rtl/BSP/ST7785_panel_master.v" type="file.verilog" enable="1"/>
+         <File path="src/rtl/BSP/adc_wrap.v" type="file.verilog" enable="1"/>
+         <File path="src/rtl/BSP/aud_system_top_8_16.sv" type="file.verilog" enable="1"/>
++        <File path="src/rtl/BSP/mcu_sfx_i2s.v" type="file.verilog" enable="1"/>
+         <File path="src/rtl/BSP/button_debounce.v" type="file.verilog" enable="1"/>
+         <File path="src/rtl/BSP/gb_burst_write.v" type="file.verilog" enable="1"/>
+         <File path="src/rtl/BSP/i2c_master_8_16.sv" type="file.verilog" enable="1"/>
+diff --git a/esp32t/src/rtl/BSP/system_monitor.sv b/esp32t/src/rtl/BSP/system_monitor.sv
+index 3a4dd41..7b3d61c 100644
+--- a/esp32t/src/rtl/BSP/system_monitor.sv
++++ b/esp32t/src/rtl/BSP/system_monitor.sv
+@@ -484,7 +484,7 @@ module system_monitor(
+     reg [13:0] version = {
+         1'd0,  // 1 bit reserved
+         1'd0,  // 1 bit debug,
+-        6'd14, // 6 bits minor version
++        6'd15, // 6 bits minor version
+         6'd18  // 6 bits major version
+     };
+ 
+diff --git a/esp32t/src/top.v b/esp32t/src/top.v
+index fa60189..92a00b1 100644
+--- a/esp32t/src/top.v
++++ b/esp32t/src/top.v
+@@ -410,7 +410,25 @@ module top #(
+ 
+ 
+ 
+-    wire [15:0] left, right;
++    wire [15:0] gb_left, gb_right;
++    wire [15:0] sfx_l, sfx_r;
++    mcu_sfx_i2s u_mcu_sfx_i2s (
++        .clk(gClk),
++        .reset_n(lock_o),
++        .bclk(I2S_DIN),
++        .ws(I2S_WS),
++        .sd(I2S_DOUT),
++        .pcm_l(sfx_l),
++        .pcm_r(sfx_r)
++    );
++    // The menu is an app surface. Keep cartridge audio out of its mix while
++    // preserving the MCU UI/alert channel; restore the game on menu close.
++    wire [15:0] audible_gb_l = menuDisabled ? gb_left : 16'd0;
++    wire [15:0] audible_gb_r = menuDisabled ? gb_right : 16'd0;
++    wire signed [16:0] mix_l = $signed(audible_gb_l) + $signed(sfx_l);
++    wire signed [16:0] mix_r = $signed(audible_gb_r) + $signed(sfx_r);
++    wire [15:0] left  = (mix_l > 17'sd32767) ? 16'h7fff : (mix_l < -17'sd32768) ? 16'h8000 : mix_l[15:0];
++    wire [15:0] right = (mix_r > 17'sd32767) ? 16'h7fff : (mix_r < -17'sd32768) ? 16'h8000 : mix_r[15:0];
+     wire [7:0]  volume;
+     wire        hHeadphones;
+ 
+@@ -628,8 +646,8 @@ module top #(
+         .boot_rom_enabled(boot_rom_enabled),
+ 
+         // audio
+-        .left(left),
+-        .right(right),
++        .left(gb_left),
++        .right(gb_right),
+         // video
+         .LCD_INIT_DONE(LCD_INIT_DONE),
+         .gb_lcd_clkena(gb_lcd_clkena),

@@ -1,0 +1,49 @@
+name: Build installers
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: macOS-AppleSilicon
+          - runner: macos-15-intel
+            platform: macOS-Intel
+          - runner: windows-2022
+            platform: Windows
+          - runner: ubuntu-22.04
+            platform: Linux
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt pyinstaller==6.16.0
+      - run: python -m unittest -v test_installer.py
+      - run: python -m PyInstaller --clean --noconfirm KortaMod-Installer.spec
+      - run: python package.py ${{ matrix.platform }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KortaMod-${{ matrix.platform }}
+          path: dist/KortaMod-${{ matrix.platform }}.zip
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: KortaMod-*
+          merge-multiple: true
+          path: release-assets
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release-assets/* --repo "$GITHUB_REPOSITORY" --title "KortaMod $GITHUB_REF_NAME" --notes "USB installer for Chromatic v4.2. Connect the handheld, run Install, and keep the private backup it creates. See the repository README for compatibility and source."

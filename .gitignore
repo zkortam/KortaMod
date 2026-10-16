@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.log
+*.dSYM/
+source/mcu/build-tree/
+backups/
+*.backup.bin
+.DS_Store
+dist/
+build/
