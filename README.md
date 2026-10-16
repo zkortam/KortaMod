@@ -8,7 +8,7 @@ KortaMod adds a compact app launcher and utilities to the Chromatic's Menu scree
 2. Plug your Chromatic into the laptop with a USB data cable. Close any serial monitor or updater using it.
 3. Run **Install.command** (Mac), **Install.bat** (Windows), or **Install.sh** (Linux). Keep the window open until it says **Installed**. On macOS, if Gatekeeper blocks the unsigned community installer, Control-click the blocked executable and choose Open. On Windows, SmartScreen may show **More info → Run anyway**. On Linux, your account may need serial port permission; the installer will report a port error if access is denied.
 
-The installer saves a complete backup to `Documents/KortaMod Backups` **before** flashing. Keep that backup private; it can contain your settings and Wi-Fi credentials. Installation writes only the MCU application at `0x10000` and verifies it. It leaves the bootloader, partition table, FPGA, and your saved settings in place. A full backup takes a few minutes; do not unplug during the process.
+The installer saves a complete backup to `Documents/KortaMod Backups` **before** flashing. Keep the `.bin` and matching `.json` files together and private; the backup can contain your settings and Wi-Fi credentials. The files are created with private permissions on macOS and Linux. Restore checks the backup checksum and connected device identity before writing. Installation writes only the MCU application at `0x10000` and verifies it. It leaves the bootloader, partition table, FPGA, and your saved settings in place. A full backup takes a few minutes; do not unplug during the process.
 
 Press the physical **Menu** button on the Chromatic to open KortaMod after it restarts. The firmware lives in the Menu overlay, so the normal cartridge display is still the default outside Menu.
 
@@ -31,7 +31,7 @@ Home has two pages. Page 1 has Game, Notes, Clock, Calc, Files, and Settings. Pa
 
 ## Restore your Chromatic
 
-Use the backup made by the installer **for that same physical unit**. On Mac, open **Restore.command** and select the backup. On Windows, drag the backup `.bin` file onto **Restore.bat**. On Linux, run `./Restore.sh path/to/backup.bin`.
+Use the backup made by the installer **for that same physical unit**. Keep the matching `.json` file beside the `.bin`. On Mac, open **Restore.command** and select the backup. On Windows, drag the backup `.bin` file onto **Restore.bat**. On Linux, run `./Restore.sh path/to/backup.bin`.
 
 The equivalent terminal command is:
 
@@ -40,6 +40,8 @@ The equivalent terminal command is:
 ```
 
 On Windows, run `KortaMod-Installer.exe --restore "C:\Users\YOUR_NAME\Documents\KortaMod Backups\chromatic-mcu-YYYYMMDD-HHMMSS.bin"` in Command Prompt. This rewrites and verifies the full 4 MiB MCU flash, including that unit's original settings. Keep the handheld plugged in until completion.
+
+Backups made with v0.1.0 or v0.1.1 have no identity `.json`. To restore one, add `--allow-legacy-backup` to the terminal command **only when you are certain it came from the connected physical Chromatic**.
 
 ## Compatibility and present limits
 

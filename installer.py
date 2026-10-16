@@ -7,6 +7,8 @@ import argparse
 from contextlib import redirect_stdout
 import hashlib
 import io
+import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -69,7 +71,7 @@ def require_port(selected: str | None) -> str:
     return matches[0]
 
 
-def esptool_command(port: str, *args: str) -> None:
+def esptool_command(port: str, *args: str) -> str:
     import esptool
 
     class ProgressOutput(io.TextIOBase):
@@ -98,6 +100,15 @@ def esptool_command(port: str, *args: str) -> None:
     except SystemExit as error:
         if error.code not in (None, 0):
             raise RuntimeError(f"USB flash operation failed. {output.log[-500:]}") from error
+    return output.log
+
+
+def device_mac(port: str) -> str:
+    output = esptool_command(port, "read_mac")
+    match = re.search(r"MAC:\s*([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})", output)
+    if not match:
+        raise RuntimeError("Could not read the Chromatic identity; nothing has been written")
+    return match.group(1).lower()
 
 
 def read_region(port: str, offset: int, size: int) -> bytes:
@@ -123,7 +134,9 @@ def inspect(port: str) -> str:
 
 def backup_directory() -> Path:
     location = Path.home() / "Documents" / "KortaMod Backups"
-    location.mkdir(parents=True, exist_ok=True)
+    location.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name != "nt":
+        location.chmod(0o700)
     return location
 
 
@@ -133,10 +146,26 @@ def backup(port: str) -> Path:
     if destination.exists():
         raise RuntimeError("Backup filename already exists; retry in one second")
     print("2/4 Backing up your Chromatic. This may take a few minutes...", flush=True)
-    esptool_command(port, "read_flash", "0x0", hex(FLASH_BYTES), str(destination))
-    if destination.stat().st_size != FLASH_BYTES:
+    identity = device_mac(port)
+    metadata = destination.with_suffix(".json")
+    try:
+        handle = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(handle)
+        esptool_command(port, "read_flash", "0x0", hex(FLASH_BYTES), str(destination))
+        if destination.stat().st_size != FLASH_BYTES:
+            raise RuntimeError("Backup was incomplete; nothing has been flashed")
+        with destination.open("rb") as backup_file:
+            digest = hashlib.file_digest(backup_file, "sha256").hexdigest()
+            os.fsync(backup_file.fileno())
+        handle = os.open(metadata, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(handle, "w", encoding="utf-8") as record_file:
+            json.dump({"mac": identity, "sha256": digest}, record_file)
+            record_file.flush()
+            os.fsync(record_file.fileno())
+    except BaseException:
         destination.unlink(missing_ok=True)
-        raise RuntimeError("Backup was incomplete; nothing has been flashed")
+        metadata.unlink(missing_ok=True)
+        raise
     print(f"Backup saved: {destination}", flush=True)
     print("Keep it private: it may contain Wi-Fi credentials.", flush=True)
     return destination
@@ -155,12 +184,24 @@ def install(selected: str | None) -> Path:
     return saved
 
 
-def restore(selected: str | None, filename: Path) -> None:
+def restore(selected: str | None, filename: Path, allow_legacy: bool = False) -> None:
     port = require_port(selected)
     image = filename.expanduser().resolve()
     if not image.is_file() or image.stat().st_size != FLASH_BYTES:
         raise RuntimeError("Restore requires a complete 4 MiB backup from this same Chromatic")
     data = image.read_bytes()
+    metadata = image.with_suffix(".json")
+    if metadata.is_file():
+        try:
+            record = json.loads(metadata.read_text(encoding="utf-8"))
+        except (ValueError, UnicodeError) as error:
+            raise RuntimeError("Backup identity file is damaged; restore stopped") from error
+        if not isinstance(record, dict) or record.get("sha256") != hashlib.sha256(data).hexdigest():
+            raise RuntimeError("Backup checksum does not match; restore stopped")
+        if record.get("mac") != device_mac(port):
+            raise RuntimeError("Backup belongs to a different Chromatic; restore stopped")
+    elif not allow_legacy:
+        raise RuntimeError("Backup identity file is missing. For a backup made before v0.1.2, use --allow-legacy-backup only on its original Chromatic.")
     check_image(data[0x1000:0x2000], data[APP_OFFSET:APP_OFFSET + 0x1000], data[PART_OFFSET:PART_OFFSET + 0x1000])
     print("Restoring the selected full flash image to the connected Chromatic...", flush=True)
     esptool_command(port, "write_flash", "0x0", str(image))
@@ -174,13 +215,14 @@ def main() -> int:
     parser.add_argument("--check", action="store_true", help="Check compatibility without installing")
     parser.add_argument("--self-test", action="store_true", help="Check bundled firmware without a device")
     parser.add_argument("--restore", type=Path, metavar="BACKUP", help="Restore your own full flash backup")
+    parser.add_argument("--allow-legacy-backup", action="store_true", help="Allow a pre-v0.1.2 backup without device identity metadata")
     args = parser.parse_args()
     try:
         if args.self_test:
             app, _ = verify_package()
             print(f"Package verified: MCU {app_version(app.read_bytes())}")
         elif args.restore:
-            restore(args.port, args.restore)
+            restore(args.port, args.restore, args.allow_legacy_backup)
         elif args.check:
             verify_package()
             inspect(require_port(args.port))

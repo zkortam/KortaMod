@@ -1,5 +1,9 @@
 from pathlib import Path
+import json
+import hashlib
+import os
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -51,6 +55,47 @@ class InstallerSafetyTests(unittest.TestCase):
         with patch.dict(sys.modules, {'esptool': fake}):
             installer.esptool_command('test-port', 'read_flash', '0x0', '0x1000', 'test.bin')
         self.assertEqual(calls, [['--chip', 'esp32', '--port', 'test-port', '--baud', '460800', 'read_flash', '0x0', '0x1000', 'test.bin']])
+
+    def synthetic_flash(self):
+        app, part = installer.verify_package()
+        data = bytearray(b'\xff' * installer.FLASH_BYTES)
+        data[0x1000] = 0xe9
+        data[installer.PART_OFFSET:installer.PART_OFFSET + part.stat().st_size] = part.read_bytes()
+        data[installer.APP_OFFSET:installer.APP_OFFSET + app.stat().st_size] = app.read_bytes()
+        return bytes(data)
+
+    def test_backup_is_private_and_bound_to_device(self):
+        data = self.synthetic_flash()
+        with tempfile.TemporaryDirectory() as directory:
+            def fake_esptool(port, command, start, size, path):
+                self.assertEqual(command, 'read_flash')
+                Path(path).write_bytes(data)
+            with patch.object(installer, 'backup_directory', return_value=Path(directory)), \
+                 patch.object(installer, 'device_mac', return_value='aa:bb:cc:dd:ee:ff'), \
+                 patch.object(installer, 'esptool_command', side_effect=fake_esptool):
+                image = installer.backup('test-port')
+            record = json.loads(image.with_suffix('.json').read_text())
+            self.assertEqual(record['mac'], 'aa:bb:cc:dd:ee:ff')
+            self.assertEqual(record['sha256'], hashlib.sha256(data).hexdigest())
+            if os.name != 'nt':
+                self.assertEqual(image.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(image.with_suffix('.json').stat().st_mode & 0o777, 0o600)
+            with patch.object(installer, 'require_port', return_value='test-port'), \
+                 patch.object(installer, 'device_mac', return_value='00:11:22:33:44:55'), \
+                 patch.object(installer, 'esptool_command') as command:
+                with self.assertRaisesRegex(RuntimeError, 'different Chromatic'):
+                    installer.restore(None, image)
+                command.assert_not_called()
+
+    def test_legacy_backup_requires_explicit_opt_in(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / 'old.bin'
+            image.write_bytes(self.synthetic_flash())
+            with patch.object(installer, 'require_port', return_value='test-port'), \
+                 patch.object(installer, 'esptool_command') as command:
+                with self.assertRaisesRegex(RuntimeError, 'identity file is missing'):
+                    installer.restore(None, image)
+                command.assert_not_called()
 
 
 if __name__ == '__main__':
