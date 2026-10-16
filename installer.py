@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stdout
 import hashlib
+import io
 from pathlib import Path
+import re
 import sys
 import tempfile
 from datetime import datetime
@@ -69,7 +72,32 @@ def require_port(selected: str | None) -> str:
 def esptool_command(port: str, *args: str) -> None:
     import esptool
 
-    esptool.main(["--chip", "esp32", "--port", port, "--baud", "460800", *args])
+    class ProgressOutput(io.TextIOBase):
+        def __init__(self):
+            self.log = ""
+            self.shown = -1
+
+        def write(self, message):
+            self.log += message
+            if len(self.log) > 200000:
+                self.log = self.log[-100000:]
+            for value in re.findall(r"\((\d+)\s*%\)", message):
+                step = int(value) // 10
+                if step > self.shown:
+                    self.shown = step
+                    print(f"  {min(step * 10, 100)}%", file=sys.__stdout__, flush=True)
+            return len(message)
+
+        def flush(self):
+            pass
+
+    output = ProgressOutput()
+    try:
+        with redirect_stdout(output):
+            esptool.main(["--chip", "esp32", "--port", port, "--baud", "460800", *args])
+    except SystemExit as error:
+        if error.code not in (None, 0):
+            raise RuntimeError(f"USB flash operation failed. {output.log[-500:]}") from error
 
 
 def read_region(port: str, offset: int, size: int) -> bytes:
@@ -83,9 +111,11 @@ def read_region(port: str, offset: int, size: int) -> bytes:
 
 
 def inspect(port: str) -> str:
-    boot = read_region(port, 0x1000, 0x1000)
-    part = read_region(port, PART_OFFSET, 0x1000)
-    app = read_region(port, APP_OFFSET, 0x1000)
+    print("1/4 Checking your Chromatic...", flush=True)
+    initial = read_region(port, 0x1000, 0x10000)
+    boot = initial[:0x1000]
+    part = initial[PART_OFFSET - 0x1000:PART_OFFSET]
+    app = initial[APP_OFFSET - 0x1000:APP_OFFSET]
     version = check_image(boot, app, part)
     print(f"Compatible Chromatic MCU found: {version}", flush=True)
     return version
@@ -102,13 +132,13 @@ def backup(port: str) -> Path:
     destination = backup_directory() / f"chromatic-mcu-{stamp}.bin"
     if destination.exists():
         raise RuntimeError("Backup filename already exists; retry in one second")
-    print(f"Saving your private 4 MiB backup to {destination}", flush=True)
+    print("2/4 Backing up your Chromatic. This may take a few minutes...", flush=True)
     esptool_command(port, "read_flash", "0x0", hex(FLASH_BYTES), str(destination))
     if destination.stat().st_size != FLASH_BYTES:
         destination.unlink(missing_ok=True)
         raise RuntimeError("Backup was incomplete; nothing has been flashed")
-    print(f"Backup SHA-256: {hashlib.sha256(destination.read_bytes()).hexdigest()}", flush=True)
-    print("Keep this file private: it contains device settings and may contain Wi-Fi credentials.", flush=True)
+    print(f"Backup saved: {destination}", flush=True)
+    print("Keep it private: it may contain Wi-Fi credentials.", flush=True)
     return destination
 
 
@@ -117,8 +147,9 @@ def install(selected: str | None) -> Path:
     port = require_port(selected)
     inspect(port)
     saved = backup(port)
-    print("Writing KortaMod application and verifying flash...", flush=True)
+    print("3/4 Installing KortaMod...", flush=True)
     esptool_command(port, "write_flash", hex(APP_OFFSET), str(app))
+    print("4/4 Verifying the installation...", flush=True)
     esptool_command(port, "verify_flash", hex(APP_OFFSET), str(app))
     print(f"Installed. Your restore backup is {saved}", flush=True)
     return saved
@@ -141,10 +172,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", help="Chromatic serial port; automatic when one is connected")
     parser.add_argument("--check", action="store_true", help="Check compatibility without installing")
+    parser.add_argument("--self-test", action="store_true", help="Check bundled firmware without a device")
     parser.add_argument("--restore", type=Path, metavar="BACKUP", help="Restore your own full flash backup")
     args = parser.parse_args()
     try:
-        if args.restore:
+        if args.self_test:
+            app, _ = verify_package()
+            print(f"Package verified: MCU {app_version(app.read_bytes())}")
+        elif args.restore:
             restore(args.port, args.restore)
         elif args.check:
             verify_package()

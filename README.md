@@ -6,7 +6,7 @@ KortaMod adds a compact app launcher and utilities to the Chromatic's Menu scree
 
 1. Download the ZIP for your laptop from [Releases](https://github.com/zkortam/KortaMod/releases/latest): **macOS Apple Silicon**, **macOS Intel**, **Windows**, or **Linux**. Unzip it.
 2. Plug your Chromatic into the laptop with a USB data cable. Close any serial monitor or updater using it.
-3. Run **Install.command** (Mac), **Install.bat** (Windows), or **Install.sh** (Linux). Keep the window open until it says **Installed**. On macOS, if Gatekeeper blocks the unsigned community installer, Control-click the file and choose Open. Linux may require permission to access the serial port.
+3. Run **Install.command** (Mac), **Install.bat** (Windows), or **Install.sh** (Linux). Keep the window open until it says **Installed**. On macOS, if Gatekeeper blocks the unsigned community installer, Control-click the blocked executable and choose Open. On Windows, SmartScreen may show **More info → Run anyway**. On Linux, your account may need serial port permission; the installer will report a port error if access is denied.
 
 The installer saves a complete backup to `Documents/KortaMod Backups` **before** flashing. Keep that backup private; it can contain your settings and Wi-Fi credentials. Installation writes only the MCU application at `0x10000` and verifies it. It leaves the bootloader, partition table, FPGA, and your saved settings in place. A full backup takes a few minutes; do not unplug during the process.
 
@@ -31,7 +31,9 @@ Home has two pages. Page 1 has Game, Notes, Clock, Calc, Files, and Settings. Pa
 
 ## Restore your Chromatic
 
-Use the backup made by the installer **for that same physical unit**. From a terminal in the extracted ZIP, run:
+Use the backup made by the installer **for that same physical unit**. On Mac, open **Restore.command** and select the backup. On Windows, drag the backup `.bin` file onto **Restore.bat**. On Linux, run `./Restore.sh path/to/backup.bin`.
+
+The equivalent terminal command is:
 
 ```sh
 ./KortaMod-Installer --restore "$HOME/Documents/KortaMod Backups/chromatic-mcu-YYYYMMDD-HHMMSS.bin"

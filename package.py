@@ -6,12 +6,13 @@ from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED
 platform = sys.argv[1]
 executable = 'KortaMod-Installer.exe' if platform == 'Windows' else 'KortaMod-Installer'
 launcher = {'Windows': 'Install.bat', 'macOS-AppleSilicon': 'Install.command', 'macOS-Intel': 'Install.command', 'Linux': 'Install.sh'}[platform]
+restore = {'Windows': 'Restore.bat', 'macOS-AppleSilicon': 'Restore.command', 'macOS-Intel': 'Restore.command', 'Linux': 'Restore.sh'}[platform]
 archive = Path('dist') / f'KortaMod-{platform}.zip'
 with ZipFile(archive, 'w', ZIP_DEFLATED) as output:
-    for path in (Path('dist') / executable, Path(launcher), Path('README.md'), Path('LICENSE')):
+    for path in (Path('dist') / executable, Path(launcher), Path(restore), Path('README.md'), Path('LICENSE')):
         info = ZipInfo(path.name)
         info.compress_type = ZIP_DEFLATED
         info.create_system = 3
-        info.external_attr = ((0o755 if path.name in (executable, launcher) else 0o644) << 16)
+        info.external_attr = ((0o755 if path.name in (executable, launcher, restore) else 0o644) << 16)
         output.writestr(info, path.read_bytes())
 print(archive)
