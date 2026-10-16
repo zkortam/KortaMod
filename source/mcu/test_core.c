@@ -498,6 +498,114 @@ static void navigation_flows(void) {
     render_guarded(&s);
 }
 
+static void regression_cases(void) {
+    KortaState s;
+    KortaAction action;
+    /* Opening Menu while Start/A is held must consume the entire press. */
+    korta_init(&s);
+    uint16_t buttons = (1u << KORTA_START) | (1u << KORTA_A);
+    korta_frame(&s, buttons, 1000);
+    korta_frame(&s, buttons, 2000);
+    korta_frame(&s, 0, 2030);
+    CHECK(s.view == KORTA_HOME && !korta_take_action(&s, &action));
+    press(&s, KORTA_START);
+    CHECK(s.view == KORTA_QUICK);
+
+    korta_init(&s);
+    s.view = KORTA_TIMER;
+    press(&s, KORTA_A);
+    uint32_t deadline = s.timer_deadline;
+    korta_service(&s, s.now_ms + 10000u);
+    press(&s, KORTA_A);
+    uint32_t left = s.timer_remaining;
+    CHECK(!s.timer_run && left > 48000u && left < 50000u);
+    korta_service(&s, s.now_ms + 10000u);
+    press(&s, KORTA_A);
+    CHECK(s.timer_run && s.timer_deadline > deadline);
+    CHECK(s.timer_deadline - s.timer_mark == left);
+    korta_service(&s, s.timer_deadline);
+    CHECK(s.timer_done && s.view == KORTA_TIMER_RING);
+
+    /* Millisecond deadlines may wrap every 49 days. */
+    korta_init(&s);
+    s.view = KORTA_TIMER;
+    korta_frame(&s, 0, UINT32_MAX - 1000u);
+    press(&s, KORTA_A);
+    CHECK(s.timer_run && s.timer_deadline < 60000u);
+    korta_service(&s, UINT32_MAX - 50u);
+    CHECK(s.timer_run);
+    render_guarded(&s);
+    korta_service(&s, s.timer_deadline);
+    CHECK(s.timer_done);
+    korta_init(&s);
+    korta_note_volume(&s, 20, UINT32_MAX - 100u);
+    korta_service(&s, UINT32_MAX - 50u);
+    CHECK(s.vol_mode == 1);
+    korta_service(&s, 3000u);
+    CHECK(s.vol_mode == 0);
+
+    /* INT32_MIN / -1 must report overflow without undefined division. */
+    korta_init(&s);
+    s.view = KORTA_CALC;
+    s.calc_acc = INT32_MIN;
+    s.calc_entry = -1;
+    s.calc_op = 4;
+    s.focus = 14;
+    press(&s, KORTA_A);
+    CHECK(s.calc_err);
+
+    korta_init(&s);
+    s.view = KORTA_LINKS;
+    KortaLink link = {.phase = KORTA_WIFI_IDLE, .count = 1};
+    strcpy(link.nets[0].ssid, "Locked");
+    link.nets[0].locked = true;
+    korta_set_link(&s, &link);
+    s.focus = 1;
+    press(&s, KORTA_A);
+    CHECK(s.typing_pass && s.flow);
+    press(&s, KORTA_B);
+    CHECK(s.view == KORTA_LINKS && s.flow);
+
+    /* An alarm arriving during a timer alert must not create a return loop. */
+    korta_init(&s);
+    s.view = KORTA_TIMER_RING;
+    s.ring_from = KORTA_NOTES;
+    s.time_known = s.alarm_on = true;
+    s.hour = s.alarm_h; s.min = s.alarm_m;
+    korta_service(&s, 1000);
+    CHECK(s.view == KORTA_TIMER_RING && s.ring_from == KORTA_NOTES);
+    press(&s, KORTA_A);
+    CHECK(s.view == KORTA_ALARM_RING && s.ring_from == KORTA_NOTES);
+    press(&s, KORTA_A);
+    CHECK(s.view == KORTA_NOTES);
+
+    korta_init(&s);
+    open_app(&s, 12);
+    CHECK(s.view == KORTA_FLASH && s.hw.brightness == 16);
+    s.timer_run = true; s.timer_deadline = s.now_ms + 1;
+    korta_service(&s, s.now_ms + 1);
+    CHECK(s.view == KORTA_TIMER_RING && s.hw.brightness == 7);
+    press(&s, KORTA_A);
+    CHECK(s.view == KORTA_FLASH && s.hw.brightness == 16);
+    press(&s, KORTA_B);
+    CHECK(s.hw.brightness == 7);
+}
+
+static void random_navigation(void) {
+    KortaState s;
+    korta_init(&s);
+    uint32_t random = 0x91ac73u;
+    for (unsigned i = 0; i < 20000; i++) {
+        random ^= random << 13; random ^= random >> 17; random ^= random << 5;
+        korta_press(&s, (KortaButton)(random % 8u));
+        drain(&s);  /* The real port drains actions every frame. */
+        CHECK(s.view < KORTA_VIEW_COUNT);
+        CHECK(s.note_len <= KORTA_NOTE_CAPACITY && s.note[s.note_len] == '\0');
+        CHECK(s.pass_len < sizeof s.password && s.password[s.pass_len] == '\0');
+        if ((i % 100u) == 0) render_guarded(&s);
+    }
+}
+
 static void dump_frames(void) {
     FILE *out = fopen("/tmp/korta_frames.bin", "wb");
     if (!out) return;
@@ -568,6 +676,8 @@ int main(void) {
     hold_and_double();
     apps();
     navigation_flows();
+    regression_cases();
+    random_navigation();
     dump_frames();
     if (failures) {
         fprintf(stderr, "%d checks failed\n", failures);

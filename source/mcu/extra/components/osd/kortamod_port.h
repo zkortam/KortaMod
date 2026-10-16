@@ -12,3 +12,6 @@ bool Korta_Paint(uint16_t *dst);
 OSD_Result_t Korta_Draw(void *arg);
 OSD_Result_t Korta_OnButton(Button_t button, ButtonState_t state, void *arg);
 OSD_Result_t Korta_OnTransition(void *arg);
+
+/* Power task snapshot; the UI remains the sole owner of shell state. */
+bool Korta_HasWakeDeadline(void);

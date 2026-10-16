@@ -29,10 +29,16 @@ static wifi_ap_record_t scan_buf[SCAN_KEEP];
 static uint16_t scan_count;
 static KortaLink published;
 static bool task_up;
+static uint32_t pending_commands;
 static bool radio_inited;
 static bool radio_started;
 static bool sntp_started;
 static bool join_armed;
+static bool connection_wanted;
+static uint32_t join_started_at;
+static wifi_config_t target_config;
+static esp_netif_t *station;
+static esp_event_handler_instance_t wifi_handler, ip_handler;
 static uint8_t resume_phase;
 static uint32_t scanned_at;
 static uint32_t join_arm_ms;
@@ -53,13 +59,9 @@ static void copy_text(char *dest, size_t size, const char *src) {
     if (!dest || !size) return;
     dest[0] = '\0';
     if (!src) return;
-    size_t o = 0;
-    for (size_t i = 0; src[i] && o + 1 < size; i++) {
-        unsigned char c = (unsigned char)src[i];
-        if (c < 32 || c > 126) continue;
-        dest[o++] = (char)c;
-    }
-    dest[o] = '\0';
+    size_t n = strnlen(src, size - 1);
+    memcpy(dest, src, n);
+    dest[n] = '\0';
 }
 
 static bool denied_reason(int reason) {
@@ -104,27 +106,32 @@ static void start_sntp(void) {
 
 static bool ensure_radio(void) {
     if (radio_inited) return true;
+    /* Settings owns NVS. A radio error must never erase user data. */
     esp_err_t err = nvs_flash_init();
-    if (err != ESP_OK && err != ESP_ERR_NVS_NO_FREE_PAGES && err != ESP_ERR_INVALID_STATE) {
-        if (err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-            nvs_flash_erase();
-            err = nvs_flash_init();
-        }
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
-    }
+    if (err != ESP_OK) return false;
     err = esp_netif_init();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
     err = esp_event_loop_create_default();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
-    if (esp_netif_create_default_wifi_sta() == NULL) return false;
+    station = esp_netif_create_default_wifi_sta();
+    if (!station) return false;
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    if (esp_wifi_init(&cfg) != ESP_OK) return false;
-    esp_wifi_set_storage(WIFI_STORAGE_RAM);
-    if (esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi, NULL, NULL) != ESP_OK) return false;
-    if (esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_ip, NULL, NULL) != ESP_OK) return false;
-    if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) return false;
+    if (esp_wifi_init(&cfg) != ESP_OK) goto failed_netif;
+    if (esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK) goto failed_wifi;
+    if (esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi, NULL, &wifi_handler) != ESP_OK) goto failed_wifi;
+    if (esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_ip, NULL, &ip_handler) != ESP_OK) goto failed_wifi;
+    if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) goto failed_wifi;
     radio_inited = true;
     return true;
+failed_wifi:
+    if (ip_handler) esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, ip_handler);
+    if (wifi_handler) esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_handler);
+    ip_handler = wifi_handler = NULL;
+    esp_wifi_deinit();
+failed_netif:
+    esp_netif_destroy_default_wifi(station);
+    station = NULL;
+    return false;
 }
 
 static bool radio_on(void) {
@@ -140,7 +147,7 @@ static bool radio_on(void) {
         }
         if (started) (void)xSemaphoreTake(started, pdMS_TO_TICKS(2000));
         esp_wifi_set_ps(WIFI_PS_NONE);
-        radio_started = true;
+        __atomic_store_n(&radio_started, true, __ATOMIC_RELEASE);
         publish_phase(KORTA_WIFI_IDLE);
     }
     return true;
@@ -149,7 +156,7 @@ static bool radio_on(void) {
 static void fill_config(wifi_config_t *cfg, const char *ssid, const char *password) {
     memset(cfg, 0, sizeof *cfg);
     if (ssid) {
-        size_t n = strnlen(ssid, 31);
+        size_t n = strnlen(ssid, 32);
         memcpy(cfg->sta.ssid, ssid, n);
     }
     if (password) {
@@ -198,23 +205,17 @@ static void connect_to(const char *ssid, const char *password) {
         bool sae = auth == WIFI_AUTH_WPA3_PSK || auth == WIFI_AUTH_WPA2_WPA3_PSK;
         cfg.sta.sae_pwe_h2e = sae ? WPA3_SAE_PWE_BOTH : WPA3_SAE_PWE_UNSPECIFIED;
     }
+    /* Stop the old association/scan before installing the new configuration. */
+    esp_wifi_scan_stop();
+    target_config = cfg;
     join_failures = 0;
-    join_armed = false;
+    connection_wanted = true;
+    join_armed = true;
+    join_arm_ms = (uint32_t)(esp_timer_get_time() / 1000);
     __atomic_store_n(&ev_disc, 0, __ATOMIC_RELEASE);
-    esp_wifi_set_config(WIFI_IF_STA, &cfg);
+    __atomic_store_n(&ev_ip, 0, __ATOMIC_RELEASE);
     publish_link(KORTA_WIFI_JOIN, ssid, rssi, 0, true);
-    wifi_ap_record_t ap;
-    bool associated = esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
-    if (associated) {
-        join_armed = true;
-        join_arm_ms = (uint32_t)(esp_timer_get_time() / 1000);
-        esp_wifi_disconnect();
-        return;
-    }
-    if (esp_wifi_connect() != ESP_OK) {
-        join_failures++;
-        publish_link(KORTA_WIFI_FAIL, ssid, rssi, 0, true);
-    }
+    esp_wifi_disconnect();
 }
 
 static void begin_scan(void) {
@@ -238,6 +239,8 @@ static void begin_scan(void) {
 }
 
 static void finish_scan(void) {
+    /* Scan completion can arrive after Off, Forget, or a new Join. */
+    if (!radio_started) return;
     uint16_t count = 0;
     esp_wifi_scan_get_ap_num(&count);
     if (count > SCAN_KEEP) count = SCAN_KEEP;
@@ -286,7 +289,7 @@ static void finish_scan(void) {
     }
     uint8_t phase = resume_phase == KORTA_WIFI_SCAN || resume_phase == KORTA_WIFI_OFF ? KORTA_WIFI_IDLE : resume_phase;
     if (xSemaphoreTake(lock, pdMS_TO_TICKS(50)) == pdTRUE) {
-        if (published.phase == KORTA_WIFI_ONLINE || published.phase == KORTA_WIFI_JOIN) phase = published.phase;
+        if (published.phase != KORTA_WIFI_SCAN) phase = published.phase;
         published.phase = phase;
         published.count = (uint8_t)kept;
         memcpy(published.nets, found, sizeof found);
@@ -306,10 +309,14 @@ static void refresh_rssi(void) {
 
 static void handle(const LinkCmd *cmd) {
     if (cmd->op == KORTA_LINK_OFF) {
+        connection_wanted = false;
+        join_armed = false;
+        __atomic_store_n(&ev_ip, 0, __ATOMIC_RELEASE);
+        if (sntp_started) { esp_sntp_stop(); sntp_started = false; }
         if (radio_started) {
             esp_wifi_disconnect();
             esp_wifi_stop();
-            radio_started = false;
+            __atomic_store_n(&radio_started, false, __ATOMIC_RELEASE);
             if (started) xSemaphoreTake(started, 0);
         }
         if (xSemaphoreTake(lock, pdMS_TO_TICKS(50)) == pdTRUE) {
@@ -335,6 +342,10 @@ static void handle(const LinkCmd *cmd) {
         return;
     }
     if (cmd->op == KORTA_LINK_FORGET) {
+        connection_wanted = false;
+        join_armed = false;
+        __atomic_store_n(&ev_ip, 0, __ATOMIC_RELEASE);
+        if (sntp_started) { esp_sntp_stop(); sntp_started = false; }
         if (radio_started) esp_wifi_disconnect();
         wifi_config_t blank;
         memset(&blank, 0, sizeof blank);
@@ -355,8 +366,15 @@ static void link_task(void *arg) {
     (void)arg;
     for (;;) {
         LinkCmd cmd;
-        if (xQueueReceive(queue, &cmd, pdMS_TO_TICKS(400)) == pdTRUE) handle(&cmd);
-        if (__atomic_exchange_n(&ev_ip, 0, __ATOMIC_ACQ_REL)) {
+        if (xQueueReceive(queue, &cmd, pdMS_TO_TICKS(400)) == pdTRUE) {
+            handle(&cmd);
+            __atomic_sub_fetch(&pending_commands, 1, __ATOMIC_ACQ_REL);
+        }
+        wifi_ap_record_t current_ap;
+        if (__atomic_exchange_n(&ev_ip, 0, __ATOMIC_ACQ_REL) && radio_started && connection_wanted
+            && esp_wifi_sta_get_ap_info(&current_ap) == ESP_OK
+            && memcmp(current_ap.ssid, target_config.sta.ssid, 32) == 0) {
+            __atomic_store_n(&ev_disc, 0, __ATOMIC_RELEASE);
             uint32_t addr = __atomic_load_n(&got_ip, __ATOMIC_ACQUIRE);
             join_failures = 0;
             join_armed = false;
@@ -370,38 +388,48 @@ static void link_task(void *arg) {
         }
         int reason = __atomic_exchange_n(&ev_disc, 0, __ATOMIC_ACQ_REL);
         uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-        if (join_armed && (reason || now_ms - join_arm_ms > 1500)) {
+        if (join_armed && radio_started && connection_wanted && (reason || now_ms - join_arm_ms > 1500)) {
             join_armed = false;
-            esp_err_t err = esp_wifi_connect();
+            join_started_at = now_ms;
+            esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &target_config);
+            if (err == ESP_OK) err = esp_wifi_connect();
             reason = 0;
             if (err != ESP_OK) {
                 join_failures++;
-                if (join_failures >= 3) publish_link(KORTA_WIFI_FAIL, NULL, 0, 0, true);
+                if (join_failures >= 3) {
+                    connection_wanted = false;
+                    publish_link(KORTA_WIFI_FAIL, NULL, 0, 0, true);
+                }
                 else {
                     join_armed = true;
                     join_arm_ms = now_ms;
                 }
             }
         }
-        if (reason) {
+        if (radio_started && connection_wanted && !join_armed && now_ms - join_started_at >= 30000u) {
+            uint8_t phase;
+            xSemaphoreTake(lock, portMAX_DELAY);
+            phase = published.phase;
+            xSemaphoreGive(lock);
+            if (phase == KORTA_WIFI_JOIN) reason = WIFI_REASON_CONNECTION_FAIL;
+        }
+        if (reason && radio_started && connection_wanted) {
             uint8_t phase = KORTA_WIFI_OFF;
             if (xSemaphoreTake(lock, pdMS_TO_TICKS(20)) == pdTRUE) {
                 phase = published.phase;
                 xSemaphoreGive(lock);
             }
-            if (phase == KORTA_WIFI_JOIN) {
+            if (phase == KORTA_WIFI_JOIN || phase == KORTA_WIFI_ONLINE || phase == KORTA_WIFI_SCAN) {
                 join_failures++;
                 if (join_failures >= 3) {
+                    connection_wanted = false;
                     uint8_t next = (target_pass[0] && denied_reason(reason)) ? KORTA_WIFI_DENIED : KORTA_WIFI_FAIL;
                     publish_link(next, NULL, 0, 0, true);
-                }
-            } else if (phase == KORTA_WIFI_ONLINE) {
-                if (join_failures < 4 && radio_started) {
-                    join_failures++;
-                    publish_phase(KORTA_WIFI_JOIN);
-                    if (esp_wifi_connect() != ESP_OK) publish_link(KORTA_WIFI_FAIL, NULL, 0, 0, true);
                 } else {
-                    publish_link(KORTA_WIFI_FAIL, NULL, 0, 0, true);
+                    publish_link(KORTA_WIFI_JOIN, NULL, 0, 0, true);
+                    join_armed = true;
+                    join_arm_ms = now_ms;
+                    esp_wifi_disconnect();
                 }
             }
         }
@@ -429,13 +457,20 @@ void KortaLink_Start(void) {
     lock = xSemaphoreCreateMutex();
     started = xSemaphoreCreateBinary();
     queue = xQueueCreate(6, sizeof(LinkCmd));
-    if (!lock || !queue || !started) return;
-    if (xTaskCreate(link_task, "korta-link", 8192, NULL, 4, NULL) != pdPASS) return;
-    task_up = true;
+    if (lock && queue && started && xTaskCreate(link_task, "korta-link", 8192, NULL, 4, NULL) == pdPASS) {
+        task_up = true;
+        return;
+    }
+    if (queue) vQueueDelete(queue);
+    if (started) vSemaphoreDelete(started);
+    if (lock) vSemaphoreDelete(lock);
+    queue = NULL;
+    started = lock = NULL;
 }
 
 bool KortaLink_RadioOn(void) {
-    return radio_started;
+    return __atomic_load_n(&radio_started, __ATOMIC_ACQUIRE)
+        || __atomic_load_n(&pending_commands, __ATOMIC_ACQUIRE) != 0;
 }
 
 void KortaLink_Command(int op, const char *ssid, const char *password) {
@@ -445,12 +480,17 @@ void KortaLink_Command(int op, const char *ssid, const char *password) {
     cmd.op = (uint8_t)op;
     copy_text(cmd.ssid, sizeof cmd.ssid, ssid);
     copy_text(cmd.password, sizeof cmd.password, password);
-    (void)xQueueSend(queue, &cmd, pdMS_TO_TICKS(50));
+    __atomic_add_fetch(&pending_commands, 1, __ATOMIC_ACQ_REL);
+    if (xQueueSend(queue, &cmd, 0) != pdTRUE) {
+        __atomic_sub_fetch(&pending_commands, 1, __ATOMIC_ACQ_REL);
+        publish_phase(KORTA_WIFI_FAIL);
+    }
 }
 
 void KortaLink_Snapshot(KortaLink *out) {
     if (!out) return;
     memset(out, 0, sizeof *out);
+    if (!task_up) { out->phase = KORTA_WIFI_FAIL; return; }
     if (!lock || xSemaphoreTake(lock, pdMS_TO_TICKS(20)) != pdTRUE) return;
     *out = published;
     xSemaphoreGive(lock);

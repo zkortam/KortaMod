@@ -17,9 +17,10 @@ from datetime import datetime
 
 FLASH_BYTES = 4 * 1024 * 1024
 APP_OFFSET = 0x10000
+APP_BYTES = 1024 * 1024
 PART_OFFSET = 0x8000
 USB_ID = (0x374E, 0x0101)
-APP_SHA256 = "855460c8b49dafe0f93ad48025d43ec802cf0f7799afaa66ad01e792a4f9e822"
+APP_SHA256 = "6931ec841616a2543a561ceb6c662c04625bf712d957c8e6a9c228587d94fc61"
 PART_SHA256 = "7f00b6c042a89b15b0cac534f82ed988caf29278ff5700b0c511eb1b5bb7c820"
 
 
@@ -33,6 +34,9 @@ def verify_package() -> tuple[Path, Path]:
     for path, expected in ((app, APP_SHA256), (part, PART_SHA256)):
         if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
             raise RuntimeError(f"Firmware package is missing or damaged: {path.name}")
+    if not 0x50 <= app.stat().st_size <= APP_BYTES:
+        raise RuntimeError("Application does not fit the stock factory partition")
+    app_version(app.read_bytes())
     return app, part
 
 
@@ -46,10 +50,12 @@ def check_image(header: bytes, app_head: bytes, part: bytes) -> str:
     if len(header) < 0x20 or header[0] != 0xE9:
         raise RuntimeError("The connected MCU does not have the expected ESP32 bootloader")
     expected_part = resource("partition-table.bin").read_bytes()
+    if hashlib.sha256(expected_part).hexdigest() != PART_SHA256:
+        raise RuntimeError("Partition compatibility reference is damaged")
     if part[: len(expected_part)] != expected_part:
         raise RuntimeError("Partition layout differs from stock Chromatic v4.2; installation stopped")
     version = app_version(app_head)
-    if version not in ("0.13.4", "0.13.4-korta3"):
+    if version not in ("0.13.4", "0.13.4-korta3", "0.13.4-korta4"):
         raise RuntimeError(f"MCU version {version!r} is untested; installation stopped")
     return version
 
@@ -148,20 +154,30 @@ def backup(port: str) -> Path:
     print("2/4 Backing up your Chromatic. This may take a few minutes...", flush=True)
     identity = device_mac(port)
     metadata = destination.with_suffix(".json")
+    # Exclusive reservations avoid overwriting a backup from another process.
+    handle = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    os.close(handle)
     try:
-        handle = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        os.close(handle)
-        esptool_command(port, "read_flash", "0x0", hex(FLASH_BYTES), str(destination))
-        if destination.stat().st_size != FLASH_BYTES:
-            raise RuntimeError("Backup was incomplete; nothing has been flashed")
-        with destination.open("rb") as backup_file:
-            digest = hashlib.file_digest(backup_file, "sha256").hexdigest()
-            os.fsync(backup_file.fileno())
         handle = os.open(metadata, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        with os.fdopen(handle, "w", encoding="utf-8") as record_file:
-            json.dump({"mac": identity, "sha256": digest}, record_file)
-            record_file.flush()
-            os.fsync(record_file.fileno())
+        os.close(handle)
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
+    try:
+        destination.chmod(0o600)
+        metadata.chmod(0o600)
+        esptool_command(port, "read_flash", "0x0", hex(FLASH_BYTES), str(destination))
+        data = destination.read_bytes()
+        if len(data) != FLASH_BYTES:
+            raise RuntimeError("Backup was incomplete; nothing has been flashed")
+        check_image(data[0x1000:0x2000], data[APP_OFFSET:APP_OFFSET + 0x1000], data[PART_OFFSET:PART_OFFSET + 0x1000])
+        with metadata.open("w", encoding="utf-8") as output:
+            json.dump({"mac": identity, "sha256": hashlib.sha256(data).hexdigest()}, output)
+            output.flush()
+            os.fsync(output.fileno())
+        metadata.chmod(0o600)
+        with destination.open("rb") as output:
+            os.fsync(output.fileno())
     except BaseException:
         destination.unlink(missing_ok=True)
         metadata.unlink(missing_ok=True)
@@ -212,10 +228,11 @@ def restore(selected: str | None, filename: Path, allow_legacy: bool = False) ->
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", help="Chromatic serial port; automatic when one is connected")
-    parser.add_argument("--check", action="store_true", help="Check compatibility without installing")
-    parser.add_argument("--self-test", action="store_true", help="Check bundled firmware without a device")
-    parser.add_argument("--restore", type=Path, metavar="BACKUP", help="Restore your own full flash backup")
-    parser.add_argument("--allow-legacy-backup", action="store_true", help="Allow a pre-v0.1.2 backup without device identity metadata")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true", help="Check compatibility without installing")
+    mode.add_argument("--self-test", action="store_true", help="Check bundled firmware without a device")
+    mode.add_argument("--restore", type=Path, metavar="BACKUP", help="Restore your own full flash backup")
+    parser.add_argument("--allow-legacy-backup", action="store_true", help="Allow an older backup without device identity metadata")
     args = parser.parse_args()
     try:
         if args.self_test:

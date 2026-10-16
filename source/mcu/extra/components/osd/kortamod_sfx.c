@@ -40,8 +40,12 @@ static const int8_t SINE[256] = {
 
 static i2s_chan_handle_t tx;
 static TaskHandle_t task;
-static volatile uint8_t req_kind;
-static volatile uint8_t req_vol;
+/* Stock FPGA 18.8 has no PCM mixer. Enable only with a validated FPGA build. */
+#ifndef KORTA_EXPERIMENTAL_AUDIO
+#define KORTA_EXPERIMENTAL_AUDIO 0
+#endif
+static uint32_t request;
+static bool ready;
 
 static uint32_t step_hz(uint32_t hz) {
     return (uint32_t)(((uint64_t)hz << 32) / (uint32_t)SR);
@@ -185,20 +189,21 @@ static void write_pcm(const int16_t *pcm, size_t frames) {
 
 static void sfx_task(void *arg) {
     (void)arg;
-    if (!open_i2s()) vTaskDelete(NULL);
+    if (!open_i2s()) { vTaskDelete(NULL); return; }
+    __atomic_store_n(&ready, true, __ATOMIC_RELEASE);
     int16_t pcm[CHUNK * 2];
     int32_t mix[CHUNK];
     Hit hits[MAX_HITS];
     int pos = 0, total = 0, nh = 0;
     uint8_t playing = 0, vol = 100;
     for (;;) {
-        uint8_t kind = req_kind;
+        uint32_t next = __atomic_exchange_n(&request, 0, __ATOMIC_ACQ_REL);
+        uint8_t kind = (uint8_t)next;
         if (kind) {
-            req_kind = 0;
-            vol = req_vol ? req_vol : 100;
+            vol = (uint8_t)(next >> 8);
             recipe(kind, hits, &nh, &total);
             pos = 0;
-            playing = 1;
+            playing = vol && total > 0;
         }
         if (playing) {
             int n = total - pos;
@@ -223,12 +228,12 @@ static void sfx_task(void *arg) {
 }
 
 void KortaSfx_Init(void) {
-    if (task) return;
+    if (!KORTA_EXPERIMENTAL_AUDIO || task) return;
     xTaskCreate(sfx_task, "korta_sfx", 4096, NULL, 6, &task);
 }
 
 void KortaSfx_Play(uint8_t kind, uint8_t volume) {
-    if (!kind || !volume || !task) return;
-    req_vol = volume > 100 ? 100 : volume;
-    req_kind = kind;
+    if (!kind || !__atomic_load_n(&ready, __ATOMIC_ACQUIRE)) return;
+    uint32_t vol = volume > 100 ? 100 : volume;
+    __atomic_store_n(&request, (vol << 8) | kind, __ATOMIC_RELEASE);
 }

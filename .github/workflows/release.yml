@@ -27,6 +27,11 @@ jobs:
           python-version: '3.11'
       - run: python -m pip install -r requirements.txt pyinstaller==6.16.0
       - run: python -m unittest -v test_installer.py
+      - name: Check core behavior and memory safety
+        if: runner.os == 'Linux'
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined -fno-sanitize-recover=all -I source/mcu/extra/components/osd source/mcu/extra/components/osd/kortamod_core.c source/mcu/test_core.c -o /tmp/korta-test
+          /tmp/korta-test
       - run: python -m PyInstaller --clean --noconfirm KortaMod-Installer.spec
       - if: runner.os == 'Windows'
         run: .\dist\KortaMod-Installer.exe --self-test

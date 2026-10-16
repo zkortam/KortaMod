@@ -356,10 +356,30 @@ index 08f5360..5c83ab3 100644
  OSD_Result_t Firmware_Initialize(void);
  OSD_Result_t Firmware_OnButton(const Button_t Button, const ButtonState_t State, void *arg);
 diff --git a/components/settings/settings.c b/components/settings/settings.c
-index 3202db6..f333b09 100644
+index 3202db6..6ffeaae 100644
 --- a/components/settings/settings.c
 +++ b/components/settings/settings.c
-@@ -136,6 +136,23 @@ OSD_Result_t Settings_Update(const SettingKey_t eKey, const uint32_t Value)
+@@ -78,16 +78,12 @@ OSD_Result_t Settings_Initialize(void)
+ 
+     esp_err_t esp_err = nvs_flash_init();
+ 
+-    if ((esp_err == ESP_ERR_NVS_NO_FREE_PAGES) || (esp_err == ESP_ERR_NVS_NEW_VERSION_FOUND))
++    if (esp_err != ESP_OK)
+     {
+-        ESP_LOGW(TAG, "NVS parition changed (%s). Reformatting (all settings are lost!).", esp_err_to_name(esp_err));
+-
+-        ESP_ERROR_CHECK(nvs_flash_erase());
+-        esp_err = nvs_flash_init();
++        ESP_LOGE(TAG, "NVS unavailable (%s); preserving stored data", esp_err_to_name(esp_err));
++        return kOSD_Result_Err_SettingsNVSNotLoaded;
+     }
+ 
+-    ESP_ERROR_CHECK( esp_err );
+-
+     esp_err = nvs_open(Settings_GetNVSNamespace(), NVS_READWRITE, &_Handle);
+     if (esp_err != ESP_OK)
+     {
+@@ -136,6 +132,23 @@ OSD_Result_t Settings_Update(const SettingKey_t eKey, const uint32_t Value)
      return kOSD_Result_Ok;
  }
  
@@ -488,27 +508,30 @@ index 4fd22f7..7e3fe36 100644
 \ No newline at end of file
 +void FPGA_Tx_WritePaletteStyle(void);
 diff --git a/main/main.c b/main/main.c
-index 8c98f78..f7a7d63 100644
+index 8c98f78..05896ef 100644
 --- a/main/main.c
 +++ b/main/main.c
-@@ -25,6 +25,7 @@
+@@ -25,6 +25,8 @@
  #include "fw.h"
  #include "osd.h"
  #include "osd_default.h"
 +#include "kortamod_port.h"
++#include "esp_memory_utils.h"
  #include "low_batt_icon_ctl.h"
  #include "style.h"
  #include "player_num.h"
-@@ -71,6 +72,8 @@ static lv_disp_t *disp;
+@@ -71,6 +73,10 @@ static lv_disp_t *disp;
  #define PIXELSPERXFER 16*ROWS_PER_XFER_X10
  #define BYTESPERXFER PIXELSPERXFER*2
  
-+static DMA_ATTR lv_color_t buffy[160 * 144];
++/* Internal DRAM .bss is DMA capable on this ESP32 (PSRAM is disabled).
++ * DMA_ATTR forces a flash-backed .data section, storing 46,080 zero bytes. */
++static WORD_ALIGNED_ATTR lv_color_t buffy[160 * 144];
 +
  static void notify_lvgl_flush_ready(spi_transaction_t *pTransaction)
  {
      static int rownum = 0;
-@@ -87,8 +90,13 @@ static void notify_lvgl_flush_ready(spi_transaction_t *pTransaction)
+@@ -87,14 +93,19 @@ static void notify_lvgl_flush_ready(spi_transaction_t *pTransaction)
  
  static void example_lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map)
  {
@@ -524,7 +547,14 @@ index 8c98f78..f7a7d63 100644
  }
  
  static void lvgl_tick(void *arg)
-@@ -107,8 +115,6 @@ static void lvglTimerTask(void* param)
+ {
+     /* Tell LVGL how many milliseconds has elapsed */
+-    lv_tick_inc(kLVGL_TickPeriod_us);
++    lv_tick_inc(kLVGL_TickPeriod_us / 1000u);
+ }
+ 
+ static void lvglTimerTask(void* param)
+@@ -107,8 +118,6 @@ static void lvglTimerTask(void* param)
      }
  }
  
@@ -533,19 +563,67 @@ index 8c98f78..f7a7d63 100644
  static void send_lines(spi_device_handle_t spi, int ypos, uint16_t *linedata)
  {
      esp_err_t ret;
+@@ -279,7 +288,7 @@ void app_main(void)
+         .spics_io_num=PIN_NUM_QSPI_CS,
+         .queue_size=NUMTRANS,
+         .pre_cb=NULL,
+-        .flags=SPI_DEVICE_HALFDUPLEX,
++        .flags=SPI_DEVICE_HALFDUPLEX | SPI_DEVICE_NO_RETURN_RESULT,
+         .cs_ena_pretrans=3,
+         .cs_ena_posttrans=3,
+         .command_bits=11,
+@@ -300,6 +309,7 @@ void app_main(void)
+     // it's recommended to choose the size of the draw buffer(s) to be at least 1/10 screen sized
+     lv_color_t *buf1 = (lv_color_t*)&buffy;
+     assert(buf1);
++    assert(esp_ptr_dma_capable(buf1));
+     lv_disp_draw_buf_init(&disp_buf, buf1, NULL, kOSD_NumPixels);
+ 
+     ESP_LOGI(TAG, "Register display driver to LVGL");
 diff --git a/main/pwrmgr.c b/main/pwrmgr.c
-index 439241c..8c615d8 100644
+index 439241c..a604f3d 100644
 --- a/main/pwrmgr.c
 +++ b/main/pwrmgr.c
-@@ -12,6 +12,7 @@
+@@ -12,6 +12,8 @@
  #include "fpga_tx.h"
  #include "freertos/FreeRTOS.h"
  #include "freertos/task.h"
 +#include "kortamod_link.h"
++#include "kortamod_port.h"
  #include "osd.h"
  
  #include <stdbool.h>
-@@ -127,6 +128,10 @@ void PwrMgr_IdleTimerPet(void)
+@@ -66,6 +68,10 @@ void PwrMgr_Task(void *arg)
+     {
+         if (ulTaskNotifyTake(pdTRUE, portMAX_DELAY))
+         {
++            if (KortaLink_RadioOn()) {
++                PwrMgr_IdleTimerPet();
++                continue;
++            }
+             // Pause both tasks to ensure that they finish up any work in progress. Since the Sleep task is of higher priority,
+             // the delays below are taken advantage of to permit a context switch.
+             FPGA_Tx_Pause();
+@@ -87,6 +93,9 @@ void PwrMgr_Task(void *arg)
+             ESP_LOGD(TAG, "Sleeping");
+             uart_wait_tx_done(CONFIG_ESP_CONSOLE_UART_NUM, portMAX_DELAY);
+ 
++            /* Timers and alarms must wake the MCU even without FPGA traffic. */
++            if (Korta_HasWakeDeadline()) esp_sleep_enable_timer_wakeup(1000000);
++            else esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+             esp_light_sleep_start();
+ 
+             ESP_LOGD(TAG, "Awake");
+@@ -96,6 +105,8 @@ void PwrMgr_Task(void *arg)
+             // The Rx task will resume the Tx task once it receives the brightness level
+             FPGA_Rx_UseBrightnessReadback();
+             FPGA_Rx_Resume();
++            /* A timer wake has no FPGA packet to resume TX for an alert. */
++            if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER) FPGA_Tx_Resume();
+         }
+     }
+ 
+@@ -127,6 +138,10 @@ void PwrMgr_IdleTimerPet(void)
  static void IdleTimerCB( TimerHandle_t xTimer )
  {
      (void)xTimer;
@@ -557,37 +635,78 @@ index 439241c..8c615d8 100644
  }
  
 diff --git a/sdkconfig.defaults b/sdkconfig.defaults
-index b6612ec..9259fe0 100644
+index b6612ec..f60f071 100644
 --- a/sdkconfig.defaults
 +++ b/sdkconfig.defaults
-@@ -2,7 +2,7 @@
+@@ -1,15 +1,67 @@
+-# This file was generated using idf.py save-defconfig. It can be edited manually.
++# This file was generated using idf.py save-defconfig or menuconfig [D] key. It can be edited manually.
  # Espressif IoT Development Framework (ESP-IDF) 5.3.0 Project Minimal Configuration
  #
  CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
 -CONFIG_APP_PROJECT_VER="0.13.4"
-+CONFIG_APP_PROJECT_VER="0.13.4-korta3"
++CONFIG_APP_PROJECT_VER="0.13.4-korta4"
  CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
  CONFIG_CHROMATIC_FW_VER_STR="4.2"
++CONFIG_COMPILER_OPTIMIZATION_SIZE=y
  CONFIG_CONSOLE_SORTED_HELP=y
-@@ -11,5 +11,19 @@ CONFIG_LOG_DEFAULT_LEVEL_NONE=y
++CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
++CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
++CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
++CONFIG_ESP_WIFI_MGMT_SBUF_NUM=16
++CONFIG_ESP_WIFI_ENABLE_SAE_PK=n
++CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_STA=n
++CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
++CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n
+ CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
+ CONFIG_LOG_DEFAULT_LEVEL_NONE=y
++CONFIG_LWIP_IPV6=n
++CONFIG_MBEDTLS_ECP_DP_SECP192R1_ENABLED=n
++CONFIG_MBEDTLS_ECP_DP_SECP224R1_ENABLED=n
++CONFIG_MBEDTLS_ECP_DP_SECP384R1_ENABLED=n
++CONFIG_MBEDTLS_ECP_DP_SECP521R1_ENABLED=n
++CONFIG_MBEDTLS_ECP_DP_SECP192K1_ENABLED=n
++CONFIG_MBEDTLS_ECP_DP_SECP224K1_ENABLED=n
++CONFIG_MBEDTLS_ECP_DP_SECP256K1_ENABLED=n
++CONFIG_MBEDTLS_ECP_DP_BP256R1_ENABLED=n
++CONFIG_MBEDTLS_ECP_DP_BP384R1_ENABLED=n
++CONFIG_MBEDTLS_ECP_DP_BP512R1_ENABLED=n
++CONFIG_MBEDTLS_ECP_DP_CURVE25519_ENABLED=n
++CONFIG_NEWLIB_NANO_FORMAT=y
  CONFIG_LV_COLOR_CHROMA_KEY_HEX=0xFF00FF
  CONFIG_LV_USE_ASSERT_STYLE=y
  CONFIG_LV_SPRINTF_USE_FLOAT=y
 -CONFIG_LV_FONT_MONTSERRAT_26=y
 -CONFIG_LV_FONT_MONTSERRAT_28=y
-+# STA only. WPA2 and WPA3-SAE stay. No SoftAP, enterprise, IPv6, or unused LVGL widgets.
-+CONFIG_NEWLIB_NANO_FORMAT=y
-+# CONFIG_LWIP_IPV6 is not set
-+# CONFIG_ESP_WIFI_SOFTAP_SUPPORT is not set
-+# CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT is not set
-+# CONFIG_ESP_WIFI_ENABLE_SAE_PK is not set
-+# CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_STA is not set
-+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
-+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
-+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
-+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
-+CONFIG_MBEDTLS_ECP_DP_SECP256R1_ENABLED=y
-+# CONFIG_LV_BUILD_EXAMPLES is not set
-+# CONFIG_LV_USE_CHART is not set
-+# CONFIG_LV_FONT_MONTSERRAT_26 is not set
-+# CONFIG_LV_FONT_MONTSERRAT_28 is not set
++CONFIG_LV_USE_ARC=n
++CONFIG_LV_USE_BAR=n
++CONFIG_LV_USE_BTN=n
++CONFIG_LV_USE_BTNMATRIX=n
++CONFIG_LV_USE_CANVAS=n
++CONFIG_LV_USE_CHECKBOX=n
++CONFIG_LV_USE_DROPDOWN=n
++CONFIG_LV_USE_ROLLER=n
++CONFIG_LV_USE_SLIDER=n
++CONFIG_LV_USE_SWITCH=n
++CONFIG_LV_USE_TEXTAREA=n
++CONFIG_LV_USE_ANIMIMG=n
++CONFIG_LV_USE_CALENDAR=n
++CONFIG_LV_USE_CHART=n
++CONFIG_LV_USE_COLORWHEEL=n
++CONFIG_LV_USE_IMGBTN=n
++CONFIG_LV_USE_KEYBOARD=n
++CONFIG_LV_USE_LED=n
++CONFIG_LV_USE_LIST=n
++CONFIG_LV_USE_MENU=n
++CONFIG_LV_USE_METER=n
++CONFIG_LV_USE_MSGBOX=n
++CONFIG_LV_USE_SPAN=n
++CONFIG_LV_USE_SPINBOX=n
++CONFIG_LV_USE_SPINNER=n
++CONFIG_LV_USE_TABVIEW=n
++CONFIG_LV_USE_WIN=n
++CONFIG_LV_USE_THEME_BASIC=n
++CONFIG_LV_USE_FLEX=n
++CONFIG_LV_USE_GRID=n
++CONFIG_LV_USE_SNAPSHOT=n
++CONFIG_LV_BUILD_EXAMPLES=n

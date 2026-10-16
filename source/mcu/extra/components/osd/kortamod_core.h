@@ -100,6 +100,7 @@ typedef struct {
 } KortaAction;
 
 typedef struct {
+    bool storage_ok;
     bool battery_known;
     uint8_t battery_pct;
     bool charging;
@@ -197,6 +198,7 @@ typedef struct {
     uint32_t timer_mark;
     uint32_t timer_deadline;
     uint32_t timer_acc;
+    uint32_t timer_remaining;
 
     int32_t calc_acc;
     int32_t calc_entry;
@@ -217,6 +219,7 @@ typedef struct {
     KortaLink link;
 
     uint16_t held;
+    uint16_t blocked_held;
     uint32_t now_ms;
     bool primed;
     uint8_t edge_seen;

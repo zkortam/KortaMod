@@ -194,7 +194,7 @@ static void set_view(KortaState *s, KortaView view) {
         s->hw.brightness = brightness;
         push(s, KORTA_ACT_BRIGHTNESS, brightness);
     }
-    if (s->view == KORTA_QUICK && view == KORTA_FLASH) {
+    if (s->view != KORTA_FLASH && view == KORTA_FLASH) {
         s->flash_saved = s->hw.brightness;
         s->hw.brightness = 16;
         push(s, KORTA_ACT_BRIGHTNESS, 16);
@@ -504,11 +504,6 @@ static void launch_game(KortaState *s) {
 static void open_dest(KortaState *s, KortaView next) {
     if (next == KORTA_HOME) s->via_settings = false;
     set_view(s, next);
-    if (next == KORTA_FLASH) {
-        s->flash_saved = s->hw.brightness;
-        s->hw.brightness = 16;
-        push(s, KORTA_ACT_BRIGHTNESS, 16);
-    }
 }
 static int link_rows(const KortaState *s) {
     return 1 + s->link.count + (s->link.saved ? 1 : 0);
@@ -717,7 +712,7 @@ static bool calc_apply(KortaState *s) {
     else if (s->calc_op == 3) result = (int64_t)a * b;
     else if (s->calc_op == 4) {
         if (b == 0) return false;
-        result = a / b;
+        result = (int64_t)a / b;
     }
     if (result > 2147483647LL || result < -2147483648LL) return false;
     s->calc_acc = (int32_t)result;
@@ -776,6 +771,8 @@ static void move_calc(KortaState *s, KortaButton b) {
 static void timer_toggle(KortaState *s) {
     if (s->timer_run) {
         if (!s->timer_count) s->timer_acc += s->now_ms - s->timer_mark;
+        else s->timer_remaining = (int32_t)(s->timer_deadline - s->now_ms) > 0
+            ? s->timer_deadline - s->now_ms : 0;
         s->timer_run = false;
         return;
     }
@@ -783,22 +780,28 @@ static void timer_toggle(KortaState *s) {
     s->timer_alert_pending = false;
     s->timer_run = true;
     s->timer_mark = s->now_ms;
-    if (s->timer_count) s->timer_deadline = s->now_ms + (uint32_t)s->timer_set * 1000u;
+    if (s->timer_count) {
+        uint32_t remaining = s->timer_remaining ? s->timer_remaining : (uint32_t)s->timer_set * 1000u;
+        s->timer_deadline = s->now_ms + remaining;
+        s->timer_remaining = 0;
+    }
 }
 static void timer_reset(KortaState *s) {
     s->timer_run = false;
     s->timer_done = false;
     s->timer_alert_pending = false;
     s->timer_acc = 0;
+    s->timer_remaining = 0;
 }
 static void nudge_timer(KortaState *s, int dir) {
     if (s->timer_run) return;
-    if (s->focus == 0) s->timer_count = !s->timer_count;
+    if (s->focus == 0) { s->timer_count = !s->timer_count; timer_reset(s); }
     else if (s->focus == 1 && s->timer_count) {
         int v = (int)s->timer_set + dir * 15;
         if (v < 15) v = 15;
         if (v > 3600) v = 3600;
         s->timer_set = (uint16_t)v;
+        timer_reset(s);
     }
 }
 static void open_match(KortaState *s) {
@@ -823,7 +826,6 @@ static void choose_net(KortaState *s, int index) {
         s->typing_pass = true;
         s->symbols = false;
         s->caps = false;
-        s->flow = false;
         return;
     }
     s->wifi_keep = true;
@@ -1125,6 +1127,7 @@ static void on_repeat(KortaState *s, KortaButton b, bool *leave) {
     on_tap(s, b, leave);
 }
 static void on_start_short(KortaState *s) {
+    if (s->vol_mode == 2) { s->vol_mode = 0; return; }
     if (s->view == KORTA_KEYBOARD) {
         if (s->typing_pass) finish_pass(s);
         else if (s->typing_find) finish_find(s);
@@ -1138,14 +1141,17 @@ static void on_start_short(KortaState *s) {
     }
 }
 static void on_start_hold(KortaState *s) {
+    if (s->vol_mode == 2) return;
     if (s->view == KORTA_KEYBOARD || s->view == KORTA_ALARM_RING || s->view == KORTA_TIMER_RING) return;
     open_find(s, s->view);
 }
 static void on_select_short(KortaState *s) {
+    if (s->vol_mode == 2) return;
     if (s->view == KORTA_ALARM_RING || s->view == KORTA_TIMER_RING) return;
     open_find(s, s->view);
 }
 static void on_select_hold(KortaState *s) {
+    if (s->vol_mode == 2) return;
     if (s->view == KORTA_KEYBOARD) return;
     s->night = !s->night;
     push(s, KORTA_ACT_PREFS, 0);
@@ -1155,6 +1161,8 @@ static void service_alarm(KortaState *s) {
         if (s->time_known && (s->hour != s->alarm_h || s->min != s->alarm_m)) s->alarm_latched = false;
         return;
     }
+    /* Present one alert at a time; keep the timer's return destination intact. */
+    if (s->view == KORTA_TIMER_RING) return;
     bool match = s->hour == s->alarm_h && s->min == s->alarm_m;
     if (!match) s->alarm_latched = false;
     else if (!s->alarm_latched) {
@@ -1246,7 +1254,14 @@ static void row_at(Painter *d, const char *label, const char *right, int y, bool
         fill(d, 3, y, 154, 14, d->p.card);
         border(d, 3, y, 154, 14, d->p.ink, 1);
     } else fill(d, 8, y + 13, 144, 1, d->p.line);
-    draw_text(d, label, 7, y + 4, d->p.ink);
+    char clipped[26];
+    int available = right && right[0] ? 153 - text_width(right) - 13 : 147;
+    int chars = available / 6;
+    if (chars < 0) chars = 0;
+    if (chars > 25) chars = 25;
+    snprintf(clipped, sizeof clipped, "%.*s", chars, label);
+    if ((int)strlen(label) > chars && chars) clipped[chars - 1] = '.';
+    draw_text(d, clipped, 7, y + 4, d->p.ink);
     if (right && right[0]) draw_text(d, right, 153 - text_width(right), y + 4, on ? d->p.ink : d->p.muted);
 }
 static void list_window(const KortaState *s, int count, int window, int *start, int *shown) {
@@ -1312,7 +1327,8 @@ static uint32_t timer_shown(const KortaState *s) {
         return ms;
     }
     if (s->timer_done) return 0;
-    if (s->timer_run) return s->now_ms >= s->timer_deadline ? 0 : s->timer_deadline - s->now_ms;
+    if (s->timer_run) return (int32_t)(s->timer_deadline - s->now_ms) <= 0 ? 0 : s->timer_deadline - s->now_ms;
+    if (s->timer_remaining) return s->timer_remaining;
     return (uint32_t)s->timer_set * 1000u;
 }
 static void big_center(Painter *d, const char *text, int y, uint16_t color) {
@@ -1435,12 +1451,12 @@ static void paint_keys(Painter *d, const KortaState *s) {
     draw_text(d, "HOLD", 132, 134, d->p.band_ink);
 }
 static void paint_notes(Painter *d, const KortaState *s) {
-    fill(d, 4, 16, 152, 58, d->p.card);
-    border(d, 4, 16, 152, 58, d->p.line, 1);
+    fill(d, 4, 16, 152, 62, d->p.card);
+    border(d, 4, 16, 152, 62, d->p.line, 1);
     if (!s->note_len) centered(d, "EMPTY", 80, 40, d->p.muted);
     else {
         char line[24];
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 6; i++) {
             int start = i * 23;
             if (start >= s->note_len) break;
             int n = s->note_len - start;
@@ -1452,6 +1468,7 @@ static void paint_notes(Painter *d, const KortaState *s) {
     }
     row_at(d, "EDIT", NULL, 80, s->focus == 0);
     row_at(d, "CLEAR", NULL, 98, s->focus == 1);
+    if (!s->hw.storage_ok) centered(d, "SAVE FAILED", 80, 118, d->p.accent);
 }
 static void paint_clock(Painter *d, const KortaState *s) {
     char big[16];
@@ -1550,7 +1567,8 @@ static void paint_files(Painter *d, const KortaState *s) {
     snprintf(size, sizeof size, "%uB", s->note_len);
     row_at(d, "NOTE", s->note_len ? size : "EMPTY", 20, s->focus == 0);
     draw_text(d, "SAVED IN NVS", 7, 48, d->p.muted);
-    draw_text(d, "SD NOT USED", 7, 64, d->p.muted);
+    draw_text(d, "SD UNAVAILABLE", 7, 64, d->p.muted);
+    if (!s->hw.storage_ok) draw_text(d, "SAVE FAILED", 7, 88, d->p.accent);
 }
 static void paint_setup(Painter *d, const KortaState *s) {
     int start, shown;
@@ -1878,6 +1896,7 @@ void korta_init(KortaState *s) {
     s->timer_count = true;
     s->timer_set = 60;
     s->calc_fresh = true;
+    s->hw.storage_ok = true;
     s->hw.brightness = 7;
     s->hw.blend = true;
     s->hw.cc_usb = true;
@@ -1908,6 +1927,7 @@ void korta_set_link(KortaState *s, const KortaLink *link) {
     s->link = *link;
     if (s->link.count > KORTA_NET_MAX) s->link.count = KORTA_NET_MAX;
     s->link.ssid[sizeof s->link.ssid - 1] = '\0';
+    for (int i = 0; i < KORTA_NET_MAX; i++) s->link.nets[i].ssid[32] = '\0';
     if (s->view == KORTA_LINKS) {
         int n = link_rows(s);
         if (n < 1) s->focus = 0;
@@ -1943,7 +1963,7 @@ void korta_service(KortaState *s, uint32_t time_ms) {
     if (!s) return;
     if (s->now_ms && time_ms < s->now_ms && (s->now_ms - time_ms) < 120000u) time_ms = s->now_ms;
     s->now_ms = time_ms;
-    if (s->vol_mode && time_ms >= s->vol_until) {
+    if (s->vol_mode && (int32_t)(time_ms - s->vol_until) >= 0) {
         s->vol_mode = 0;
         s->vol_sel = 0;
     }
@@ -2005,14 +2025,20 @@ static void infer_sfx(KortaState *s, KortaButton b, KortaView v0, uint8_t f0, ui
 bool korta_frame(KortaState *s, uint16_t held, uint32_t time_ms) {
     if (!s) return false;
     bool leave = false;
+    korta_service(s, time_ms);
     if (!s->primed) {
         s->primed = true;
         s->held = held;
         s->now_ms = time_ms;
-        for (int i = 0; i < 8; i++) s->was_down[i] = (held & (1u << i)) != 0;
+        s->blocked_held = held;
+        s->edge_seen = 0;
+        memset(s->was_down, 0, sizeof s->was_down);
+        memset(s->was_hold, 0, sizeof s->was_hold);
+        memset(s->long_fired, 0, sizeof s->long_fired);
         return false;
     }
-    korta_service(s, time_ms);
+    s->blocked_held &= held;
+    held &= (uint16_t)~s->blocked_held;
     s->held = held;
     for (int i = 0; i < 8; i++) {
         bool down = (held & (1u << i)) != 0;
@@ -2032,7 +2058,7 @@ bool korta_frame(KortaState *s, uint16_t held, uint32_t time_ms) {
             s->was_hold[i] = false;
             s->next_repeat[i] = time_ms + HOLD_MS;
             s->repeat_gap[i] = REPEAT_MS;
-            bool list_double = s->view != KORTA_KEYBOARD && s->view != KORTA_CALC && s->view != KORTA_ALARM_RING
+            bool list_double = s->vol_mode != 2 && s->view != KORTA_KEYBOARD && s->view != KORTA_CALC && s->view != KORTA_ALARM_RING
                 && s->view != KORTA_HOME;
             bool jump = list_double && (b == KORTA_UP || b == KORTA_DOWN);
             if (!defer && dbl && jump) on_double(s, b);
@@ -2046,7 +2072,7 @@ bool korta_frame(KortaState *s, uint16_t held, uint32_t time_ms) {
                 else if (b == KORTA_SELECT && s->view != KORTA_KEYBOARD) on_select_hold(s);
                 infer_sfx(s, b, v0, f0, sel0, kr0, kc0, sil0, night0, vm0, nl0);
             }
-            if (!defer && time_ms >= s->next_repeat[i]) {
+            if (!defer && (int32_t)(time_ms - s->next_repeat[i]) >= 0) {
                 on_repeat(s, b, &leave);
                 uint16_t gap = (uint16_t)(s->repeat_gap[i] * 3 / 4);
                 if (gap < REPEAT_MIN_MS) gap = REPEAT_MIN_MS;
@@ -2068,7 +2094,7 @@ bool korta_frame(KortaState *s, uint16_t held, uint32_t time_ms) {
     return leave;
 }
 bool korta_press(KortaState *s, KortaButton button) {
-    if (!s || button > KORTA_SELECT) return false;
+    if (!s || (unsigned)button > KORTA_SELECT) return false;
     uint32_t t = s->now_ms + 400;
     korta_frame(s, 0, t);
     bool leave = korta_frame(s, (uint16_t)(1u << button), t + 30);

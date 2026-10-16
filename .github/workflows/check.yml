@@ -1,0 +1,38 @@
+name: Verify firmware and installer
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  host:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify installer and bundled image
+        run: |
+          python -m unittest -v test_installer.py
+          python installer.py --self-test
+      - name: Check core behavior and memory safety
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -g -fsanitize=address,undefined -fno-sanitize-recover=all -I source/mcu/extra/components/osd source/mcu/extra/components/osd/kortamod_core.c source/mcu/test_core.c -o /tmp/korta-test
+          /tmp/korta-test
+  firmware:
+    runs-on: ubuntu-22.04
+    container: espressif/idf:v5.3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build from pinned upstream and release sources
+        shell: bash
+        run: |
+          . /opt/esp/idf/export.sh
+          bash source/mcu/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcu-build
+          path: source/mcu/build-tree/build/mcu_fw.bin

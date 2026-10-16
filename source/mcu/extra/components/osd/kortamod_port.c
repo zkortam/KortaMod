@@ -24,6 +24,7 @@
 
 #include "esp_app_desc.h"
 #include "esp_console.h"
+#include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -49,16 +50,17 @@ static bool initialized;
 static bool nvs_ok;
 static bool prefs_dirty;
 static bool settings_dirty;
-static bool clock_dirty;
+static bool storage_failed;
+static uint32_t storage_changed_at;
+static bool had_visible;
+static bool wake_deadline;
+static char last_note[KORTA_NOTE_CAPACITY + 1];
 static bool command_ready;
 static nvs_handle_t korta_nvs;
 static volatile uint32_t vol_event;
 static uint8_t last_vol = 255;
 static bool vol_seen;
 static lv_obj_t *image;
-static uint16_t previous_held;
-static uint32_t last_minute;
-static uint32_t usb_stamp;
 static uint32_t usb_clock_pending;
 static char saved_ssid[33];
 static char saved_pass[64];
@@ -130,63 +132,48 @@ static void load_prefs(void) {
         if (nvs_get_str(korta_nvs, "ssid", saved_ssid, &ssid_len) != ESP_OK) saved_ssid[0] = '\0';
         size_t pass_len = sizeof saved_pass;
         if (nvs_get_str(korta_nvs, "pass", saved_pass, &pass_len) != ESP_OK) saved_pass[0] = '\0';
-        uint32_t saved_clock = 0;
-        if (nvs_get_u32(korta_nvs, "clock", &saved_clock) == ESP_OK && saved_clock >= CLOCK_EPOCH && time(NULL) < CLOCK_EPOCH) {
-            struct timeval tv = {.tv_sec = (time_t)saved_clock};
-            settimeofday(&tv, NULL);
-        }
         uint8_t system = 50, ring = 80;
         if (nvs_get_u8(korta_nvs, "vol_s", &system) == ESP_OK && system <= 100) state.vol_sys = system;
-        if (nvs_get_u8(korta_nvs, "vol_r", &ring) == ESP_OK) state.vol_ring = ring;
+        if (nvs_get_u8(korta_nvs, "vol_r", &ring) == ESP_OK && ring <= 100) state.vol_ring = ring;
     }
-    apply_zone(zone);
     korta_apply_prefs(&state, flags, zone, alarm_h, alarm_m, note);
+    apply_zone(state.zone);
+    memcpy(last_note, state.note, sizeof last_note);
 }
 
 static void write_prefs(void) {
-    if (!nvs_ok) return;
-    uint8_t flags = (uint8_t)((state.night ? 1u : 0u) | (state.flow ? 2u : 0u) | (state.hour12 ? 4u : 0u)
-        | (state.alarm_on ? 8u : 0u) | (state.wifi_keep ? 16u : 0u));
-    nvs_set_u8(korta_nvs, "flags", flags);
-    nvs_set_i8(korta_nvs, "zone", state.zone);
-    nvs_set_u8(korta_nvs, "al_h", state.alarm_h);
-    nvs_set_u8(korta_nvs, "al_m", state.alarm_m);
-    nvs_set_str(korta_nvs, "note", state.note);
-    nvs_set_u8(korta_nvs, "vol_s", state.vol_sys);
-    nvs_set_u8(korta_nvs, "vol_r", state.vol_ring);
     prefs_dirty = true;
+    storage_changed_at = (uint32_t)(esp_timer_get_time() / 1000);
 }
 
 static void commit_storage(void) {
-    if (nvs_ok && (prefs_dirty || clock_dirty)) {
-        if (clock_dirty) {
-            time_t now = time(NULL);
-            if (now >= CLOCK_EPOCH) nvs_set_u32(korta_nvs, "clock", (uint32_t)now);
-        }
-        nvs_commit(korta_nvs);
-        prefs_dirty = false;
-        clock_dirty = false;
+    if (prefs_dirty && nvs_ok) {
+        uint8_t flags = (uint8_t)((state.night ? 1u : 0u) | (state.flow ? 2u : 0u)
+            | (state.hour12 ? 4u : 0u) | (state.alarm_on ? 8u : 0u) | (state.wifi_keep ? 16u : 0u));
+        esp_err_t err = ESP_OK;
+        /* Retain the dirty state on any failed write so a later poll retries. */
+#define SAVE(call) do { esp_err_t result = (call); if (result != ESP_OK) err = result; } while (0)
+        SAVE(nvs_set_u8(korta_nvs, "flags", flags));
+        SAVE(nvs_set_i8(korta_nvs, "zone", state.zone));
+        SAVE(nvs_set_u8(korta_nvs, "al_h", state.alarm_h));
+        SAVE(nvs_set_u8(korta_nvs, "al_m", state.alarm_m));
+        SAVE(nvs_set_str(korta_nvs, "note", state.note));
+        SAVE(nvs_set_u8(korta_nvs, "vol_s", state.vol_sys));
+        SAVE(nvs_set_u8(korta_nvs, "vol_r", state.vol_ring));
+        SAVE(nvs_set_str(korta_nvs, "ssid", saved_ssid));
+        SAVE(nvs_set_str(korta_nvs, "pass", saved_pass));
+        if (err == ESP_OK) SAVE(nvs_commit(korta_nvs));
+#undef SAVE
+        storage_failed = err != ESP_OK;
+        if (!storage_failed) prefs_dirty = false;
+        else ESP_LOGE("Korta", "Save failed: %s", esp_err_to_name(err));
     }
-    if (settings_dirty) {
-        Settings_Commit();
-        settings_dirty = false;
-    }
-}
-
-static void save_clock_minute(void) {
-    if (!nvs_ok) return;
-    time_t now = time(NULL);
-    if (now < CLOCK_EPOCH) return;
-    uint32_t minute = (uint32_t)(now / 60);
-    if (minute == last_minute) return;
-    last_minute = minute;
-    nvs_set_u32(korta_nvs, "clock", (uint32_t)now);
-    clock_dirty = true;
-    commit_storage();
+    if (settings_dirty && Settings_Commit() == kOSD_Result_Ok) settings_dirty = false;
 }
 
 static void fill_status(KortaStatus *status) {
     memset(status, 0, sizeof *status);
+    status->storage_ok = nvs_ok && !storage_failed;
     uint8_t percent = 0;
     uint16_t millivolts = 0;
     bool lipo = false;
@@ -306,17 +293,13 @@ static void apply_clock(void) {
     if (stamp == (time_t)-1) return;
     struct timeval tv = {.tv_sec = stamp};
     settimeofday(&tv, NULL);
-    clock_dirty = true;
+
 }
 
 static void remember_network(void) {
     snprintf(saved_ssid, sizeof saved_ssid, "%s", state.join_ssid);
     snprintf(saved_pass, sizeof saved_pass, "%s", state.password);
-    if (!nvs_ok) return;
-    nvs_set_str(korta_nvs, "ssid", saved_ssid);
-    nvs_set_str(korta_nvs, "pass", saved_pass);
-    nvs_commit(korta_nvs);
-    prefs_dirty = true;
+    write_prefs();
 }
 
 static void apply_action(const KortaAction *action) {
@@ -398,11 +381,7 @@ static void apply_action(const KortaAction *action) {
         case KORTA_ACT_WIFI_FORGET:
             saved_ssid[0] = '\0';
             saved_pass[0] = '\0';
-            if (nvs_ok) {
-                nvs_erase_key(korta_nvs, "ssid");
-                nvs_erase_key(korta_nvs, "pass");
-                prefs_dirty = true;
-            }
+            write_prefs();
             KortaLink_Command(KORTA_LINK_FORGET, NULL, NULL);
             break;
         case KORTA_ACT_LAUNCH:
@@ -433,13 +412,9 @@ static int korta_command(int argc, char **argv) {
     if (argc >= 3 && argv && argv[1] && argv[2] && strcmp(argv[1], "time") == 0) {
         char *end = NULL;
         unsigned long stamp = strtoul(argv[2], &end, 10);
-        if (end != argv[2] && stamp >= CLOCK_EPOCH && stamp <= 4000000000ul) {
-            struct timeval tv = {.tv_sec = (time_t)stamp};
-            settimeofday(&tv, NULL);
-            state.time_known = true;
-            usb_stamp = (uint32_t)stamp;
-            __atomic_store_n(&usb_clock_pending, 1, __ATOMIC_RELEASE);
-        }
+        if (end != argv[2] && *end == '\0' && stamp >= CLOCK_EPOCH && stamp <= 4000000000ul) {
+            __atomic_store_n(&usb_clock_pending, (uint32_t)stamp, __ATOMIC_RELEASE);
+        } else return 1;
     }
     uint8_t percent = 0;
     uint16_t millivolts = 0;
@@ -450,8 +425,8 @@ static int korta_command(int argc, char **argv) {
     KortaLink_Snapshot(&link);
     printf("korta bat %s %u%% %umV %s %s\r\n", known ? "known" : "unknown", percent, millivolts,
         lipo ? "lipo" : "aa", charging ? "charging" : "battery");
-    printf("korta time %lu zone %d known %d\r\n", (unsigned long)time(NULL), state.zone,
-        state.time_known ? 1 : 0);
+    time_t now = time(NULL);
+    printf("korta time %lu known %d\r\n", (unsigned long)now, now >= CLOCK_EPOCH);
     printf("korta wifi %s rssi %d ssid %s ip %u.%u.%u.%u\r\n", phase_name(link.phase), link.rssi, link.ssid,
         (unsigned)(link.ip & 255u), (unsigned)((link.ip >> 8) & 255u),
         (unsigned)((link.ip >> 16) & 255u), (unsigned)((link.ip >> 24) & 255u));
@@ -483,15 +458,11 @@ void Korta_Poll(void) {
             else KortaLink_Command(KORTA_LINK_ON, NULL, NULL);
         }
     }
-    if (__atomic_exchange_n(&usb_clock_pending, 0, __ATOMIC_ACQ_REL)) {
-        uint32_t stamp = usb_stamp;
-        last_minute = stamp / 60u;
-        if (nvs_ok && stamp >= CLOCK_EPOCH) {
-            nvs_set_u32(korta_nvs, "clock", stamp);
-            nvs_commit(korta_nvs);
-        }
+    uint32_t stamp = __atomic_exchange_n(&usb_clock_pending, 0, __ATOMIC_ACQ_REL);
+    if (stamp >= CLOCK_EPOCH) {
+        struct timeval tv = {.tv_sec = (time_t)stamp};
+        settimeofday(&tv, NULL);
     }
-    save_clock_minute();
     KortaStatus status;
     fill_status(&status);
     korta_set_status(&state, &status);
@@ -515,12 +486,21 @@ void Korta_Poll(void) {
             uint8_t vol = state.hw.silent ? 0 : (idle_sfx == KORTA_SFX_ALERT ? state.vol_ring : state.vol_sys);
             KortaSfx_Play(idle_sfx, vol);
         }
-        if (prefs_dirty || settings_dirty || clock_dirty) commit_storage();
+        if (memcmp(last_note, state.note, sizeof last_note) != 0) {
+            memcpy(last_note, state.note, sizeof last_note);
+            write_prefs();
+        }
+        __atomic_store_n(&wake_deadline, state.alarm_on || state.timer_run, __ATOMIC_RELEASE);
+        if (had_visible || (uint32_t)(now_ms - storage_changed_at) >= 1000u) {
+            commit_storage();
+            storage_changed_at = now_ms;
+        }
+        had_visible = false;
         state.primed = false;
         state.edge_seen = 0;
-        previous_held = 0;
         return;
     }
+    had_visible = true;
     uint16_t held = map_held(Button_GetHeld());
     bool leave = korta_frame(&state, held, now_ms);
     KortaAction action;
@@ -530,8 +510,15 @@ void Korta_Poll(void) {
         uint8_t vol = state.hw.silent ? 0 : (sfx == KORTA_SFX_ALERT ? state.vol_ring : state.vol_sys);
         KortaSfx_Play(sfx, vol);
     }
-    if ((previous_held & (uint16_t)~held) && (prefs_dirty || settings_dirty || clock_dirty)) commit_storage();
-    previous_held = held;
+    if (memcmp(last_note, state.note, sizeof last_note) != 0) {
+        memcpy(last_note, state.note, sizeof last_note);
+        write_prefs();
+    }
+    __atomic_store_n(&wake_deadline, state.alarm_on || state.timer_run, __ATOMIC_RELEASE);
+    if (!held && (uint32_t)(now_ms - storage_changed_at) >= 1000u) {
+        commit_storage();
+        storage_changed_at = now_ms;
+    }
     if (leave) {
         for (int i = 0; i < kNumButtons; i++) (void)Button_GetState((Button_t)i);
         commit_storage();
@@ -578,4 +565,8 @@ OSD_Result_t Korta_OnTransition(void *arg) {
         image = NULL;
     }
     return kOSD_Result_Ok;
+}
+
+bool Korta_HasWakeDeadline(void) {
+    return __atomic_load_n(&wake_deadline, __ATOMIC_ACQUIRE);
 }

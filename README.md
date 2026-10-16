@@ -2,6 +2,8 @@
 
 KortaMod adds a compact app launcher and utilities to the Chromatic's Menu screen. This release is for the **Chromatic v4.2 firmware generation with the ESP32 MCU app `0.13.4` and stock FPGA `18.8`**. It has been installed on one physical Chromatic. The installer checks the USB device, MCU version, and partition layout before writing.
 
+**Development build:** `0.13.4-korta4` includes the reliability and size fixes in [AUDIT.md](AUDIT.md). It passes host tests and builds for ESP32; this revision has **not yet been tested on the physical handheld**. Published release ZIPs may contain the earlier build.
+
 ## Install in three steps
 
 1. Download the ZIP for your laptop from [Releases](https://github.com/zkortam/KortaMod/releases/latest): **macOS Apple Silicon**, **macOS Intel**, **Windows**, or **Linux**. Unzip it.
@@ -58,7 +60,7 @@ Backups made with v0.1.0 or v0.1.1 have no identity `.json`. To restore one, add
 bash source/mcu/build.sh
 ```
 
-The output is `source/mcu/build-tree/build/mcu_fw.bin`. `source/mcu/test_core.c` contains host-side behavior tests:
+The build losslessly converts stock RGB565 images to indexed LVGL images before compiling. The output is `source/mcu/build-tree/build/mcu_fw.bin`. `source/mcu/test_core.c` contains host-side behavior tests:
 
 ```sh
 cc -std=c11 -Wall -Wextra -Werror -I source/mcu/extra/components/osd source/mcu/extra/components/osd/kortamod_core.c source/mcu/test_core.c -o /tmp/kortamod-test
@@ -67,7 +69,7 @@ cc -std=c11 -Wall -Wextra -Werror -I source/mcu/extra/components/osd source/mcu/
 
 `source/fpga/` holds experimental, **unbuilt and unflashed** audio mixer changes against ModRetro's FPGA commit `a01aa375147943cbcd4a41f41585220d55e0c28a`. They are published for development, not included in the installer. Building that project requires the Gowin toolchain and license.
 
-The prebuilt MCU app SHA-256 is `855460c8b49dafe0f93ad48025d43ec802cf0f7799afaa66ad01e792a4f9e822`. The installer pins and verifies this hash. `firmware/partition-table.bin` is used for a read-only compatibility comparison.
+The prebuilt MCU app SHA-256 is `6931ec841616a2543a561ceb6c662c04625bf712d957c8e6a9c228587d94fc61`. The installer pins and verifies this hash. `firmware/partition-table.bin` is used for a read-only compatibility comparison.
 
 ## Work on the installer
 
