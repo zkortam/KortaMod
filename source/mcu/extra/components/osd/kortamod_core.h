@@ -162,6 +162,7 @@ typedef struct {
     bool wifi_keep;
     bool via_settings;
     int8_t zone;
+    int16_t zone_minutes;
     uint8_t dice;
     uint8_t coin;
     uint8_t roll_nonce;

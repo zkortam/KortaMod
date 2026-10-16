@@ -100,7 +100,7 @@ static int hold_and_double(void) {
     press(&s, KORTA_DOWN);
     press(&s, KORTA_RIGHT);
     press(&s, KORTA_RIGHT);
-    CHECK(s.selected == 5);
+    CHECK(s.selected == 8);
     CHECK(s.view == KORTA_HOME);
 
     korta_init(&s);
@@ -196,11 +196,9 @@ static int apps(void) {
     korta_note_volume(&s, 40, 1000);
     CHECK(s.vol_mode == 1 && s.vol_media == 40 && s.vol_sys == 50);
     press(&s, KORTA_LEFT);
-    CHECK(s.view == KORTA_FIND && s.vol_mode == 1);
+    CHECK(s.view == KORTA_HOME && s.vol_mode == 2);
     korta_note_volume(&s, 50, s.now_ms);
-    CHECK(s.vol_mode == 1 && s.vol_media == 50 && s.vol_ring == 80 && s.vol_sys == 50);
-    press(&s, KORTA_A);
-    CHECK(s.vol_mode == 2 && s.view == KORTA_FIND && s.vol_sel == 0);
+    CHECK(s.vol_mode == 2 && s.vol_media == 50 && s.vol_ring == 80 && s.vol_sys == 50);
     press(&s, KORTA_RIGHT);
     CHECK(s.vol_sys == 55 && s.vol_media == 50 && s.vol_ring == 80);
     press(&s, KORTA_DOWN);
@@ -210,6 +208,8 @@ static int apps(void) {
     CHECK(s.vol_mode == 2 && s.vol_media == 60 && s.vol_sys == 55 && s.vol_ring == 85);
     press(&s, KORTA_B);
     CHECK(s.vol_mode == 0);
+    press(&s, KORTA_LEFT);
+    CHECK(s.view == KORTA_FIND);
 
     korta_init(&s);
     press(&s, KORTA_START);
@@ -435,7 +435,7 @@ static void navigation_flows(void) {
     CHECK(s.view == KORTA_HOME);
 
     korta_init(&s);
-    open_app(&s, 12);
+    open_app(&s, 6);
     CHECK(s.view == KORTA_FLASH && s.hw.brightness == 16);
     drain(&s);
     press(&s, KORTA_START);
@@ -482,7 +482,7 @@ static void navigation_flows(void) {
     CHECK(korta_take_action(&s, &action) && action.kind == KORTA_ACT_LAUNCH);
 
     korta_init(&s);
-    open_app(&s, 9); // First utility on page 2
+    open_app(&s, 7); // Dice on page 1
     CHECK(s.view == KORTA_DICE);
     press(&s, KORTA_A);
     CHECK(s.dice >= 1 && s.dice <= 6 && s.dice_anim_until > s.now_ms);
@@ -491,7 +491,7 @@ static void navigation_flows(void) {
     render_guarded(&s);
     press(&s, KORTA_B);
     CHECK(s.view == KORTA_HOME);
-    open_app(&s, 10);
+    open_app(&s, 8);
     CHECK(s.view == KORTA_COIN);
     press(&s, KORTA_A);
     CHECK((s.coin == 1 || s.coin == 2) && s.coin_anim_until > s.now_ms);
@@ -580,7 +580,7 @@ static void regression_cases(void) {
     CHECK(s.view == KORTA_NOTES);
 
     korta_init(&s);
-    open_app(&s, 12);
+    open_app(&s, 6);
     CHECK(s.view == KORTA_FLASH && s.hw.brightness == 16);
     s.timer_run = true; s.timer_deadline = s.now_ms + 1;
     korta_service(&s, s.now_ms + 1);

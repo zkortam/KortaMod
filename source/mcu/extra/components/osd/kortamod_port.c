@@ -62,6 +62,7 @@ static uint8_t last_vol = 255;
 static bool vol_seen;
 static lv_obj_t *image;
 static uint32_t usb_clock_pending;
+static int usb_zone_pending = 32767;
 static char saved_ssid[33];
 static char saved_pass[64];
 static uint8_t close_phase;
@@ -94,11 +95,13 @@ static uint16_t map_held(uint16_t raw) {
     return held;
 }
 
-static void apply_zone(int zone) {
-    if (zone < -12) zone = -12;
-    if (zone > 14) zone = 14;
-    char tz[8];
-    snprintf(tz, sizeof tz, "UTC%d", -zone);
+static void apply_zone_minutes(int minutes) {
+    if (minutes < -720) minutes = -720;
+    if (minutes > 840) minutes = 840;
+    int posix = -minutes;
+    char tz[16];
+    snprintf(tz, sizeof tz, "UTC%c%d:%02d", posix < 0 ? '-' : '+',
+        abs(posix) / 60, abs(posix) % 60);
     setenv("TZ", tz, 1);
     tzset();
 }
@@ -137,7 +140,13 @@ static void load_prefs(void) {
         if (nvs_get_u8(korta_nvs, "vol_r", &ring) == ESP_OK && ring <= 100) state.vol_ring = ring;
     }
     korta_apply_prefs(&state, flags, zone, alarm_h, alarm_m, note);
-    apply_zone(state.zone);
+    int16_t zone_minutes = (int16_t)(state.zone * 60);
+    if (nvs_ok && nvs_get_i16(korta_nvs, "zone_m", &zone_minutes) == ESP_OK
+        && zone_minutes >= -720 && zone_minutes <= 840) {
+        state.zone_minutes = zone_minutes;
+        state.zone = (int8_t)(zone_minutes / 60);
+    }
+    apply_zone_minutes(state.zone_minutes);
     memcpy(last_note, state.note, sizeof last_note);
 }
 
@@ -155,6 +164,7 @@ static void commit_storage(void) {
 #define SAVE(call) do { esp_err_t result = (call); if (result != ESP_OK) err = result; } while (0)
         SAVE(nvs_set_u8(korta_nvs, "flags", flags));
         SAVE(nvs_set_i8(korta_nvs, "zone", state.zone));
+        SAVE(nvs_set_i16(korta_nvs, "zone_m", state.zone_minutes));
         SAVE(nvs_set_u8(korta_nvs, "al_h", state.alarm_h));
         SAVE(nvs_set_u8(korta_nvs, "al_m", state.alarm_m));
         SAVE(nvs_set_str(korta_nvs, "note", state.note));
@@ -358,7 +368,7 @@ static void apply_action(const KortaAction *action) {
             apply_clock();
             break;
         case KORTA_ACT_ZONE:
-            apply_zone((int)action->value - 12);
+            apply_zone_minutes(state.zone_minutes);
             write_prefs();
             break;
         case KORTA_ACT_PREFS:
@@ -413,6 +423,12 @@ static int korta_command(int argc, char **argv) {
         char *end = NULL;
         unsigned long stamp = strtoul(argv[2], &end, 10);
         if (end != argv[2] && *end == '\0' && stamp >= CLOCK_EPOCH && stamp <= 4000000000ul) {
+            if (argc >= 4 && argv[3]) {
+                char *zone_end = NULL;
+                long zone = strtol(argv[3], &zone_end, 10);
+                if (zone_end == argv[3] || *zone_end != '\0' || zone < -720 || zone > 840) return 1;
+                __atomic_store_n(&usb_zone_pending, (int)zone, __ATOMIC_RELEASE);
+            }
             __atomic_store_n(&usb_clock_pending, (uint32_t)stamp, __ATOMIC_RELEASE);
         } else return 1;
     }
@@ -426,7 +442,7 @@ static int korta_command(int argc, char **argv) {
     printf("korta bat %s %u%% %umV %s %s\r\n", known ? "known" : "unknown", percent, millivolts,
         lipo ? "lipo" : "aa", charging ? "charging" : "battery");
     time_t now = time(NULL);
-    printf("korta time %lu known %d\r\n", (unsigned long)now, now >= CLOCK_EPOCH);
+    printf("korta time %lu known %d zone_minutes %+d\r\n", (unsigned long)now, now >= CLOCK_EPOCH, state.zone_minutes);
     printf("korta wifi %s rssi %d ssid %s ip %u.%u.%u.%u\r\n", phase_name(link.phase), link.rssi, link.ssid,
         (unsigned)(link.ip & 255u), (unsigned)((link.ip >> 8) & 255u),
         (unsigned)((link.ip >> 16) & 255u), (unsigned)((link.ip >> 24) & 255u));
@@ -439,7 +455,7 @@ static void register_command(void) {
     if (command_ready) return;
     esp_console_cmd_t command = {
         .command = "korta",
-        .help = "Status. korta time <unix> sets the clock",
+        .help = "Status. korta time <unix> [UTC offset minutes] syncs the laptop clock",
         .func = &korta_command,
     };
     command_ready = esp_console_cmd_register(&command) == ESP_OK;
@@ -460,6 +476,13 @@ void Korta_Poll(void) {
     }
     uint32_t stamp = __atomic_exchange_n(&usb_clock_pending, 0, __ATOMIC_ACQ_REL);
     if (stamp >= CLOCK_EPOCH) {
+        int zone = __atomic_exchange_n(&usb_zone_pending, 32767, __ATOMIC_ACQ_REL);
+        if (zone >= -720 && zone <= 840) {
+            state.zone_minutes = (int16_t)zone;
+            state.zone = (int8_t)(zone / 60);
+            apply_zone_minutes(zone);
+            write_prefs();
+        }
         struct timeval tv = {.tv_sec = (time_t)stamp};
         settimeofday(&tv, NULL);
     }
@@ -473,7 +496,10 @@ void Korta_Poll(void) {
     korta_set_link(&state, &link);
     uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
     service_close_overlay(now_ms);
-    FPGA_Tx_SetMenuMute(OSD_IsVisible() && MenuMgr_CurrentTab() == kTabID_Korta);
+    /* Stock FPGA 18.8 shares the game and UI output. Its global mute also
+     * silences cartridge audio after leaving Menu on some units. Keep the
+     * output enabled until the separate FPGA mixer is built and verified. */
+    FPGA_Tx_SetMenuMute(false);
     uint32_t ev = __atomic_exchange_n(&vol_event, 0, __ATOMIC_ACQ_REL);
     if (ev & 0x40000000u) korta_sync_volume(&state, (uint8_t)ev);
     else if (ev & 0x80000000u) korta_note_volume(&state, (uint8_t)ev, now_ms);

@@ -2,7 +2,7 @@
 
 KortaMod adds a compact app launcher and utilities to the Chromatic's Menu screen. This release is for the **Chromatic v4.2 firmware generation with the ESP32 MCU app `0.13.4` and stock FPGA `18.8`**. It has been installed on one physical Chromatic. The installer checks the USB device, MCU version, and partition layout before writing.
 
-**Development build:** `0.13.4-korta4` includes the reliability and size fixes in [AUDIT.md](AUDIT.md). It passes host tests and builds for ESP32; this revision has **not yet been tested on the physical handheld**. Published release ZIPs may contain the earlier build.
+**Current MCU build:** `0.13.4-korta5` includes the reliability and size fixes in [AUDIT.md](AUDIT.md). It was flashed and identified through the physical Chromatic's USB console. Host tests and the ESP32 build pass. The stock FPGA audio limitations below remain.
 
 ## Install in three steps
 
@@ -10,7 +10,7 @@ KortaMod adds a compact app launcher and utilities to the Chromatic's Menu scree
 2. Plug your Chromatic into the laptop with a USB data cable. Close any serial monitor or updater using it.
 3. Run **Install.command** (Mac), **Install.bat** (Windows), or **Install.sh** (Linux). Keep the window open until it says **Installed**. On macOS, if Gatekeeper blocks the unsigned community installer, Control-click the blocked executable and choose Open. On Windows, SmartScreen may show **More info → Run anyway**. On Linux, your account may need serial port permission; the installer will report a port error if access is denied.
 
-The installer saves a complete backup to `Documents/KortaMod Backups` **before** flashing. Keep the `.bin` and matching `.json` files together and private; the backup can contain your settings and Wi-Fi credentials. The files are created with private permissions on macOS and Linux. Restore checks the backup checksum and connected device identity before writing. Installation writes only the MCU application at `0x10000` and verifies it. It leaves the bootloader, partition table, FPGA, and your saved settings in place. A full backup takes a few minutes; do not unplug during the process.
+The installer saves a complete backup to `Documents/KortaMod Backups` **before** flashing. Keep the `.bin` and matching `.json` files together and private; the backup can contain your settings and Wi-Fi credentials. The files are created with private permissions on macOS and Linux. Restore checks the backup checksum and connected device identity before writing. Installation writes only the MCU application at `0x10000`, verifies it, and syncs the clock to the laptop's current time and UTC offset. It leaves the bootloader, partition table, FPGA, and your saved settings in place. A full backup takes a few minutes; do not unplug during the process.
 
 Press the physical **Menu** button on the Chromatic to open KortaMod after it restarts. The firmware lives in the Menu overlay, so the normal cartridge display is still the default outside Menu.
 
@@ -24,12 +24,14 @@ Press the physical **Menu** button on the Chromatic to open KortaMod after it re
 | Start | Quick Controls, or finish text input |
 | Left from the first Home tile | Explore/Search |
 | Right from Explore | Return to Home |
-| Volume wheel, then A while its bar is visible | Open the volume panel |
+| Volume wheel, then Left or A while its bar is visible | Open the volume panel |
 | Start → Volume | Open the volume panel without using the wheel |
 
 The wheel controls **Media**. The volume panel's Left/Right controls adjust **System** or **Ring** independently; Up/Down chooses the row. Media is shown for reference and follows the wheel. B closes the panel.
 
-Home has two pages. Page 1 has Game, Notes, Clock, Calc, Files, and Settings. Page 2 has Dice, Coin, Count, Flash, Convert, Color, and Player. Notes persist on the device. Explore searches apps with the on-screen keyboard.
+Home has two pages. Page 1 has Game, Notes, Clock, Calc, Files, Settings, Flash, Dice, and Coin. Page 2 has Count, Convert, Color, and Player. Notes persist on the device. Explore searches apps with the on-screen keyboard.
+
+The clock follows the laptop's local time when you install or run **SyncClock.command** (Mac), **SyncClock.bat** (Windows), or **SyncClock.sh** (Linux) with the Chromatic plugged in. The UTC offset is saved, including half-hour offsets. The Chromatic does not keep accurate time through a full power loss without a new USB sync or an online time source. Run SyncClock after a power cycle, travel, or a daylight-saving change if its clock is wrong.
 
 ## Restore your Chromatic
 
@@ -47,7 +49,7 @@ Backups made with v0.1.0 or v0.1.1 have no identity `.json`. To restore one, add
 
 ## Compatibility and present limits
 
-- The public image is **MCU only**. FPGA `18.8` remains stock. KortaMod temporarily mutes the shared analog game output while its Menu screen is open. True independent game and interface sound mixing requires the unfinished FPGA work in `source/fpga/`.
+- The public image is **MCU only**. FPGA `18.8` remains stock. Game sound can continue while KortaMod Home is visible, and interface sounds are not audible through the speaker. The System and Ring values are stored separately, but an FPGA audio mixer is required for them to be heard independently. The mixer source is in `source/fpga/` and is not part of this release.
 - The stock FPGA owns the physical Menu and cartridge path. KortaMod is a Menu tab, not a boot replacement.
 - Files and Player are early interfaces. SD card file access, cartridge save management, Bluetooth, IR, and boot-to-Home are not yet implemented.
 - The app version and partition checks stop installation on unknown firmware. A future release must be built and tested for each additional hardware and firmware combination.
@@ -69,7 +71,7 @@ cc -std=c11 -Wall -Wextra -Werror -I source/mcu/extra/components/osd source/mcu/
 
 `source/fpga/` holds experimental, **unbuilt and unflashed** audio mixer changes against ModRetro's FPGA commit `a01aa375147943cbcd4a41f41585220d55e0c28a`. They are published for development, not included in the installer. Building that project requires the Gowin toolchain and license.
 
-The prebuilt MCU app SHA-256 is `6931ec841616a2543a561ceb6c662c04625bf712d957c8e6a9c228587d94fc61`. The installer pins and verifies this hash. `firmware/partition-table.bin` is used for a read-only compatibility comparison.
+The prebuilt MCU app SHA-256 is `9a8352aa06963b6a4bff2435b6f3d1ec28fae8bcf6352a820cc8ee530ce1ac7a`. The installer pins and verifies this hash. `firmware/partition-table.bin` is used for a read-only compatibility comparison.
 
 ## Work on the installer
 

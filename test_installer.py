@@ -18,7 +18,7 @@ class InstallerSafetyTests(unittest.TestCase):
 
     def test_package_hashes_and_app_header(self):
         app, part = installer.verify_package()
-        self.assertEqual(installer.app_version(app.read_bytes()), '0.13.4-korta4')
+        self.assertEqual(installer.app_version(app.read_bytes()), '0.13.4-korta5')
         self.assertEqual(len(part.read_bytes()), 3072)
 
     def test_stock_flash_accepted(self):
@@ -34,7 +34,7 @@ class InstallerSafetyTests(unittest.TestCase):
         initial[0x7000:0x7000 + part.stat().st_size] = part.read_bytes()
         initial[0xf000:0x10000] = app.read_bytes()[:0x1000]
         with patch.object(installer, 'read_region', return_value=bytes(initial)) as read:
-            self.assertEqual(installer.inspect('test-port'), '0.13.4-korta4')
+            self.assertEqual(installer.inspect('test-port'), '0.13.4-korta5')
             read.assert_called_once_with('test-port', 0x1000, 0x10000)
 
     def test_unknown_layout_and_version_rejected(self):
@@ -175,9 +175,10 @@ class RecoveryTests(unittest.TestCase):
         with patch.object(installer, 'require_port', return_value='test-port'), \
              patch.object(installer, 'inspect', side_effect=lambda p: calls.append('inspect')), \
              patch.object(installer, 'backup', side_effect=lambda p: calls.append('backup') or Path('saved.bin')), \
+             patch.object(installer, 'sync_clock', side_effect=lambda p: calls.append('sync_clock')), \
              patch.object(installer, 'esptool_command', side_effect=lambda p, *a: calls.append(a[0])):
             installer.install(None)
-        self.assertEqual(calls, ['inspect', 'backup', 'write_flash', 'verify_flash'])
+        self.assertEqual(calls, ['inspect', 'backup', 'write_flash', 'verify_flash', 'sync_clock'])
         with patch.object(installer, 'require_port', return_value='test-port'), \
              patch.object(installer, 'inspect'), \
              patch.object(installer, 'backup', side_effect=RuntimeError('backup failed')), \

@@ -1,6 +1,6 @@
 # Firmware review — 2026-10-16
 
-Revision: 0.13.4-korta4. The MCU sources remain based on pinned ModRetro v4.2. FPGA work remains experimental and excluded from the installer.
+Revision: 0.13.4-korta5. The MCU sources remain based on pinned ModRetro v4.2. FPGA work remains experimental and excluded from the installer.
 
 ## Changes
 
@@ -23,4 +23,4 @@ Revision: 0.13.4-korta4. The MCU sources remain based on pinned ModRetro v4.2. F
 
 Host behavior tests pass under AddressSanitizer and UndefinedBehaviorSanitizer, including 20,000 randomized navigation actions and regression cases. Installer recovery tests cover backup failure, write ordering, corruption, foreign-device rejection, and successful verification. A clean upstream build passed before image optimization; the final optimized ESP32 build also passes and leaves about 24% of the 1 MiB factory partition free.
 
-This is a source/build review, not proof of zero defects. This revision has not been flashed or tested on the handheld. Wi-Fi association/reconnect, scheduled sleep/wake, Menu/input ownership, power draw, and physical restoration still need hardware checks. SD access, BLE, IR, boot-to-Home, and independent interface audio remain unimplemented. The published FPGA experiment has not been synthesized or validated. Preference saves are debounced by one second; sudden power loss before commit can lose the latest edit.
+This is a source/build review, not proof of zero defects. Korta5 was flashed to one Chromatic; its MCU version, stock FPGA version, USB console, and computer clock sync were confirmed on that device. Wi-Fi association/reconnect, scheduled sleep/wake, Menu/input ownership, power draw, and physical restoration still need hardware checks. SD access, BLE, IR, boot-to-Home, and independent interface audio remain unimplemented. The published FPGA experiment has not been synthesized or validated. Preference saves are debounced by one second; sudden power loss before commit can lose the latest edit.

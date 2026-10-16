@@ -3,6 +3,7 @@
 #include "kortamod_icons.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 enum { HOLD_MS = 220, REPEAT_MS = 110, REPEAT_MIN_MS = 36, DOUBLE_MS = 320 };
@@ -19,8 +20,8 @@ static const uint8_t APP_ICON[KORTA_APP_COUNT] = {
     9, 0, 1, 4, 6, 7, 12, 13, 14, 15, 16, 17, 19
 };
 static const int8_t HOME_APP[2][KORTA_PAGE_SIZE] = {
-    {0, 1, 2, 3, 4, 5, -1, -1, -1},
-    {6, 7, 8, 9, 10, 11, 12, -1, -1}
+    {0, 1, 2, 3, 4, 5, 9, 6, 7},
+    {8, 10, 11, 12, -1, -1, -1, -1, -1}
 };
 static int home_at(int page, int slot) {
     if (page < 0 || page > 1 || slot < 0 || slot >= KORTA_PAGE_SIZE) return -1;
@@ -594,6 +595,7 @@ static void nudge_clock(KortaState *s, int dir) {
         if (z < -12) z = -12;
         if (z > 14) z = 14;
         s->zone = (int8_t)z;
+        s->zone_minutes = (int16_t)(z * 60);
         push(s, KORTA_ACT_ZONE, (uint16_t)(z + 12));
         push(s, KORTA_ACT_PREFS, 0);
         return;
@@ -841,7 +843,7 @@ static void nudge_vol(KortaState *s, uint8_t which, int dir) {
 }
 static void on_tap(KortaState *s, KortaButton b, bool *leave) {
     (void)leave;
-    if (s->vol_mode == 1 && b == KORTA_A) {
+    if (s->vol_mode == 1 && (b == KORTA_A || b == KORTA_LEFT)) {
         s->vol_mode = 2;
         s->vol_sel = 0;
         s->vol_until = s->now_ms + 8000u;
@@ -1491,8 +1493,10 @@ static void paint_clock(Painter *d, const KortaState *s) {
         else if (index == 3) snprintf(value, sizeof value, "%s", MONTHS[month - 1]);
         else if (index == 4) snprintf(value, sizeof value, "%04u", s->year);
         else if (index == 5) right = s->hour12 ? "12H" : "24H";
-        else if (s->zone == 0) right = "UTC";
-        else snprintf(value, sizeof value, "UTC%+d", s->zone);
+        else if (s->zone_minutes == 0) right = "UTC";
+        else if (s->zone_minutes % 60 == 0) snprintf(value, sizeof value, "UTC%+d", s->zone_minutes / 60);
+        else snprintf(value, sizeof value, "UTC%c%d:%02d", s->zone_minutes < 0 ? '-' : '+',
+            abs(s->zone_minutes) / 60, abs(s->zone_minutes) % 60);
         row_at(d, labels[index], right, 48 + i * 15, index == s->focus);
     }
 }
@@ -1944,6 +1948,7 @@ void korta_apply_prefs(KortaState *s, uint8_t flags, int8_t zone, uint8_t alarm_
     if (zone < -12) zone = -12;
     if (zone > 14) zone = 14;
     s->zone = zone;
+    s->zone_minutes = (int16_t)(zone * 60);
     s->alarm_h = (uint8_t)(alarm_h % 24);
     s->alarm_m = (uint8_t)(alarm_m % 60);
     if (!note) return;

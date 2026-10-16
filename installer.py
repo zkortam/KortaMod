@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import time
 from datetime import datetime
 
 FLASH_BYTES = 4 * 1024 * 1024
@@ -20,7 +21,7 @@ APP_OFFSET = 0x10000
 APP_BYTES = 1024 * 1024
 PART_OFFSET = 0x8000
 USB_ID = (0x374E, 0x0101)
-APP_SHA256 = "6931ec841616a2543a561ceb6c662c04625bf712d957c8e6a9c228587d94fc61"
+APP_SHA256 = "9a8352aa06963b6a4bff2435b6f3d1ec28fae8bcf6352a820cc8ee530ce1ac7a"
 PART_SHA256 = "7f00b6c042a89b15b0cac534f82ed988caf29278ff5700b0c511eb1b5bb7c820"
 
 
@@ -55,7 +56,7 @@ def check_image(header: bytes, app_head: bytes, part: bytes) -> str:
     if part[: len(expected_part)] != expected_part:
         raise RuntimeError("Partition layout differs from stock Chromatic v4.2; installation stopped")
     version = app_version(app_head)
-    if version not in ("0.13.4", "0.13.4-korta3", "0.13.4-korta4"):
+    if version not in ("0.13.4", "0.13.4-korta3", "0.13.4-korta4", "0.13.4-korta5"):
         raise RuntimeError(f"MCU version {version!r} is untested; installation stopped")
     return version
 
@@ -176,7 +177,7 @@ def backup(port: str) -> Path:
             output.flush()
             os.fsync(output.fileno())
         metadata.chmod(0o600)
-        with destination.open("rb") as output:
+        with destination.open("rb+") as output:
             os.fsync(output.fileno())
     except BaseException:
         destination.unlink(missing_ok=True)
@@ -185,6 +186,46 @@ def backup(port: str) -> Path:
     print(f"Backup saved: {destination}", flush=True)
     print("Keep it private: it may contain Wi-Fi credentials.", flush=True)
     return destination
+
+
+def sync_clock(port: str) -> None:
+    import serial
+
+    offset = datetime.now().astimezone().utcoffset()
+    if offset is None:
+        raise RuntimeError("The computer's local time zone is unavailable")
+    minutes = round(offset.total_seconds() / 60)
+    if not -720 <= minutes <= 840:
+        raise RuntimeError("The computer's UTC offset is outside the supported range")
+    with serial.Serial(port, 115200, timeout=0.2, write_timeout=2,
+                       dsrdtr=False, rtscts=False) as console:
+        console.dtr = False
+        console.rts = False
+        received = bytearray()
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline and b"mcu>" not in received:
+            received.extend(console.read(4096))
+            if len(received) > 16384:
+                del received[:-8192]
+        if b"mcu>" not in received:
+            raise RuntimeError("The Chromatic console did not start; clock sync failed")
+        stamp = int(time.time())
+        console.write(f"korta time {stamp} {minutes}\r\n".encode("ascii"))
+        time.sleep(0.3)
+        console.write(b"korta\r\n")
+        received.clear()
+        deadline = time.monotonic() + 5
+        pattern = re.compile(rb"korta time (\d+) known 1 zone_minutes ([+-]?\d+)")
+        while time.monotonic() < deadline:
+            received.extend(console.read(4096))
+            matches = pattern.findall(received)
+            if any(abs(int(epoch) - int(time.time())) <= 10 and int(zone) == minutes
+                   for epoch, zone in matches):
+                print(f"Clock synced to your computer (UTC{minutes / 60:+g}).", flush=True)
+                return
+            if len(received) > 16384:
+                del received[:-8192]
+    raise RuntimeError("Clock sync was not confirmed by the Chromatic")
 
 
 def install(selected: str | None) -> Path:
@@ -196,6 +237,8 @@ def install(selected: str | None) -> Path:
     esptool_command(port, "write_flash", hex(APP_OFFSET), str(app))
     print("4/4 Verifying the installation...", flush=True)
     esptool_command(port, "verify_flash", hex(APP_OFFSET), str(app))
+    print("Syncing the clock to your computer...", flush=True)
+    sync_clock(port)
     print(f"Installed. Your restore backup is {saved}", flush=True)
     return saved
 
@@ -230,6 +273,7 @@ def main() -> int:
     parser.add_argument("--port", help="Chromatic serial port; automatic when one is connected")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="Check compatibility without installing")
+    mode.add_argument("--sync-clock", action="store_true", help="Sync the Chromatic clock to this computer")
     mode.add_argument("--self-test", action="store_true", help="Check bundled firmware without a device")
     mode.add_argument("--restore", type=Path, metavar="BACKUP", help="Restore your own full flash backup")
     parser.add_argument("--allow-legacy-backup", action="store_true", help="Allow an older backup without device identity metadata")
@@ -240,6 +284,8 @@ def main() -> int:
             print(f"Package verified: MCU {app_version(app.read_bytes())}")
         elif args.restore:
             restore(args.port, args.restore, args.allow_legacy_backup)
+        elif args.sync_clock:
+            sync_clock(require_port(args.port))
         elif args.check:
             verify_package()
             inspect(require_port(args.port))
