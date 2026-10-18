@@ -4,6 +4,10 @@ KortaMod adds a compact app launcher and utilities to the Chromatic's Menu scree
 
 **Current build:** `0.13.4-korta8`, tested on a physical Chromatic (host tests, an exhaustive UI model check, a fuzzed games engine, and end-to-end tests against the live companion site). Release ZIPs on the Releases page may contain an earlier build until the next release is cut.
 
+## Official builds
+
+Official KortaMod builds are signed with the project's key and update over Wi-Fi from [kortamod.app](https://kortamod.app). Forks are welcome under the GPL, but must use a different name; see [TRADEMARK.md](TRADEMARK.md).
+
 ## Install in three steps
 
 1. Download the ZIP for your laptop from [Releases](https://github.com/zkortam/KortaMod/releases/latest): **macOS Apple Silicon**, **macOS Intel**, **Windows**, or **Linux**. Unzip it.
@@ -44,7 +48,7 @@ Manage your Chromatic from **[kortamod.app](https://kortamod.app)** on any phone
 1. On the Chromatic, open **Home → Phone** and switch **Phone link** on (it turns Wi-Fi on; pick a network in Settings → Wi-Fi if none is saved).
 2. Enter the 6-digit code it shows on the site. The browser stays paired; **Forget phones** on the Chromatic revokes every browser.
 
-From the site: edit, pin, and export notes with a real keyboard; set alarms and the timer; change settings; move the Chromatic to another Wi-Fi network (it returns to the old one if the new one fails); show a message on it or flash it to find it. Install the site as an app to get notifications when an alarm or timer rings or the battery runs low (on iPhone, add it to the Home Screen first). Design and security: [docs/phone-link.md](docs/phone-link.md). The site's source is in `cloud/`.
+From the site: edit, pin, and export notes with a real keyboard; set alarms and the timer; change settings; move the Chromatic to another Wi-Fi network (it returns to the old one if the new one fails); show a message on it or flash it to find it. Install the site as an app to get notifications when an alarm or timer rings or the battery runs low (on iPhone, add it to the Home Screen first). Design and security: [docs/phone-link.md](docs/phone-link.md). The kortamod.app service (site and backend) is separate and not part of this repository.
 
 ## Games
 
@@ -97,7 +101,7 @@ cc -std=c11 -O2 -I source/mcu/extra/components/osd source/mcu/extra/components/o
 /tmp/kortamod-model
 ```
 
-The companion site's relay logic is tested with `cd cloud && npm install && npm test`. The site's game preview is the same engine built for WebAssembly by `source/mcu/build_wasm.sh` (clang with the wasm32 target and `wasm-ld`).
+The site's game preview is the same engine built for WebAssembly by `source/mcu/build_wasm.sh` (clang with the wasm32 target and `wasm-ld`; it writes `source/mcu/kgame.wasm`).
 
 `source/fpga/` holds experimental, **unbuilt and unflashed** audio mixer changes against ModRetro's FPGA commit `a01aa375147943cbcd4a41f41585220d55e0c28a`. They are published for development, not included in the installer. Building that project requires the Gowin toolchain and license.
 

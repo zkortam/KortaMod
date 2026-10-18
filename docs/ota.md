@@ -54,8 +54,8 @@ idf-tools/python_env/idf5.3_py3.14_env/bin/python scripts/sign_firmware.py \
 cd cloud && vercel deploy --prod
 ```
 
-`sign_firmware.py` checks the image's embedded version, copies it to `cloud/public/fw/<version>.bin`
-and writes `cloud/public/fw/latest.json`. The private key is `~/.kortamod/ota-signing-key.pem`
+`sign_firmware.py` checks the image's embedded version, copies it to the site's `fw/<version>.bin`
+and writes `fw/latest.json`. The private key is `~/.kortamod/ota-signing-key.pem`
 (mode 600, never committed). **Back it up somewhere safe**: without it no further OTA updates can
 be signed for units running this firmware (they would need the USB installer). If it leaks,
 publish a firmware with a new key via the USB installer.
@@ -154,7 +154,7 @@ FINISH screen starts as soon as `MarkHealthy` runs.
 
 ### Site
 
-`cloud/api/update.js` (browser token), queueing the published manifest:
+The site's update endpoint (browser token), queueing the published manifest:
 
 ```js
 // Installs the newest signed firmware on the Chromatic.

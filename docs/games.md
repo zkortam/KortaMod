@@ -65,8 +65,8 @@ errors from the preview are sent back automatically for a fix.
 
 ## WebAssembly build (site preview)
 
-`cloud/public/kgame.wasm` is the same C engine (`native/kortamod_game.c`) built with
-`native/build_wasm.sh`. Exports:
+The site's `kgame.wasm` is the same C engine (`source/mcu/extra/components/osd/kortamod_game.c`) built with
+`source/mcu/build_wasm.sh`. Exports:
 
 | Export | Use |
 | --- | --- |
@@ -98,7 +98,7 @@ On the Chromatic installed games appear on Home after the built-in apps.
 
 ## Site implementation (findings)
 
-The Games tab (`cloud/public/games.js`) offers three ways to have a model write a game.
+The site's Games tab offers three ways to have a model write a game.
 The prompt is `SPEC` in that file, derived from this document.
 
 - **ChatGPT (copy and paste):** copies the full prompt to the clipboard and opens
@@ -118,7 +118,7 @@ The prompt is `SPEC` in that file, derived from this document.
   [limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)).
   - The redirect must be `http://127.0.0.1:<port>/auth/callback`, which a website
     can't receive, so the person pastes the address of the page that fails to load.
-  - OpenAI asks that tokens stay out of browser storage, so `cloud/api/openai.js`
+  - OpenAI asks that tokens stay out of browser storage, so the site's relay
     keeps them in an AES-GCM-encrypted, HttpOnly, SameSite=Strict cookie scoped to
     `/api/openai` and stores nothing server-side. The key derives from
     `SIWC_COOKIE_KEY` or, failing that, the database token.

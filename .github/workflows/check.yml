@@ -30,18 +30,6 @@ jobs:
         run: |
           cc -std=c11 -O2 -g -fsanitize=address,undefined -fno-sanitize-recover=all -I source/mcu/extra/components/osd source/mcu/extra/components/osd/kortamod_core.c source/mcu/test_model.c -o /tmp/korta-model
           /tmp/korta-model
-  site:
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - name: Relay tests
-        working-directory: cloud
-        run: |
-          npm ci
-          npm test
   firmware:
     runs-on: ubuntu-22.04
     container: espressif/idf:v5.3
