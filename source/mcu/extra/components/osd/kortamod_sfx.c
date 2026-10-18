@@ -104,6 +104,27 @@ static void recipe(uint8_t kind, Hit *hits, int *nh, int *total) {
             hits[1] = (Hit){3136, 80, 280, 20, 1};
             *nh = 2; *total = 600;
             break;
+        case KORTA_SFX_DICE:
+            /* Clicks that slow down over the 640 ms roll, then a low thud. */
+            hits[0] = (Hit){1400, 0, 700, 70, 0};
+            hits[1] = (Hit){1100, 2200, 700, 66, 0};
+            hits[2] = (Hit){1650, 4800, 700, 62, 0};
+            hits[3] = (Hit){1250, 7800, 700, 58, 0};
+            hits[4] = (Hit){1500, 11400, 700, 54, 0};
+            hits[5] = (Hit){1000, 15600, 800, 50, 0};
+            hits[6] = (Hit){330, 20200, 2600, 80, 0};
+            *nh = 7; *total = 23000;
+            break;
+        case KORTA_SFX_COIN:
+            /* A quiet shimmer while it spins, then the landing ring. */
+            hits[0] = (Hit){2637, 0, 1800, 30, 1};
+            hits[1] = (Hit){3136, 4000, 1800, 28, 1};
+            hits[2] = (Hit){2637, 8000, 1800, 26, 1};
+            hits[3] = (Hit){3136, 12000, 1800, 24, 1};
+            hits[4] = (Hit){2637, 20400, 9000, 82, 1};
+            hits[5] = (Hit){3951, 20400, 6000, 40, 1};
+            *nh = 6; *total = 29500;
+            break;
         default:
             *nh = 0; *total = 0;
             break;

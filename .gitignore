@@ -8,3 +8,6 @@ backups/
 .DS_Store
 dist/
 build/
+cloud/node_modules/
+cloud/.vercel/
+cloud/.env*

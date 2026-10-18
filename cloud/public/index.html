@@ -1,0 +1,790 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0a0a0b" media="(prefers-color-scheme: dark)">
+<title>KortaMod</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="description" content="Manage your ModRetro Chromatic running KortaMod from any phone or computer.">
+<style>
+:root{
+  --bg:#fafafa;--surface:#fff;--raised:#fff;--text:#0a0a0a;--muted:#737373;--faint:#a3a3a3;
+  --line:rgba(0,0,0,.08);--line-strong:rgba(0,0,0,.14);--fill:rgba(0,0,0,.04);
+  --primary:#0a0a0a;--on-primary:#fff;--ok:#16a34a;--danger:#dc2626;
+  --shadow:0 1px 2px rgba(0,0,0,.04),0 4px 16px rgba(0,0,0,.04);
+  --sheet-shadow:0 -8px 40px rgba(0,0,0,.12);
+  --ease:cubic-bezier(.2,.8,.2,1);--r:14px
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0a0a0b;--surface:#141416;--raised:#1b1b1e;--text:#f5f5f5;--muted:#8b8b92;--faint:#5c5c63;
+  --line:rgba(255,255,255,.08);--line-strong:rgba(255,255,255,.14);--fill:rgba(255,255,255,.05);
+  --primary:#f5f5f5;--on-primary:#0a0a0a;--ok:#22c55e;--danger:#f87171;
+  --shadow:0 1px 2px rgba(0,0,0,.3);--sheet-shadow:0 -8px 40px rgba(0,0,0,.5)
+}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--text)}
+body{font:15px/1.5 ui-sans-serif,-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased;min-height:100dvh;display:flex;flex-direction:column}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer;border:0;background:none;padding:0}
+:focus-visible{outline:2px solid var(--text);outline-offset:2px;border-radius:8px}
+[hidden]{display:none!important}
+
+.top{display:flex;align-items:center;justify-content:space-between;padding:calc(14px + env(safe-area-inset-top)) 20px 14px;max-width:480px;width:100%;margin:0 auto}
+.mark{font-weight:600;letter-spacing:-.01em;font-size:15px}
+.pill{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);padding:5px 10px;border:1px solid var(--line);border-radius:999px;background:var(--surface);transition:opacity .2s}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--faint);transition:background .3s}
+.dot.on{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 18%,transparent)}
+.dot.wake{background:var(--ok);animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.3}}
+@media (prefers-reduced-motion:reduce){.dot.wake{animation:none}}
+main{flex:1;width:100%;max-width:480px;margin:0 auto;padding:8px 20px calc(32px + env(safe-area-inset-bottom))}
+.view{animation:rise .32s var(--ease)}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* Pairing */
+.hero{padding:40px 0 8px}
+.hero h1{font-size:28px;line-height:1.15;letter-spacing:-.025em;font-weight:600;margin:0 0 10px}
+.hero p{color:var(--muted);margin:0;max-width:34ch}
+.cells{position:relative;display:grid;grid-template-columns:repeat(3,1fr) 14px repeat(3,1fr);gap:8px;margin:28px 0 14px}
+.cell{height:56px;border-radius:12px;background:var(--surface);border:1px solid var(--line-strong);display:grid;place-items:center;font-size:24px;font-weight:500;font-variant-numeric:tabular-nums;transition:border-color .15s,box-shadow .15s}
+.cell.cur{border-color:var(--text);box-shadow:0 0 0 3px var(--fill)}
+.gap{align-self:center;justify-self:center;width:8px;height:1px;background:var(--faint)}
+#code{position:absolute;inset:0;width:100%;height:100%;opacity:0;border:0;font-size:16px;caret-color:transparent}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:48px;padding:0 18px;border-radius:12px;font-weight:500;transition:transform .12s var(--ease),opacity .2s,background .2s}
+.btn:active{transform:scale(.98)}
+.btn:disabled{opacity:.35;cursor:default;transform:none}
+.primary{background:var(--primary);color:var(--on-primary)}
+.quiet{background:var(--fill)}
+.wide{width:100%}
+.link{color:var(--muted);font-size:14px;padding:8px 0}
+.danger{color:var(--danger)}
+
+/* Tabs */
+.seg{position:relative;display:grid;grid-template-columns:repeat(4,1fr);background:var(--fill);border-radius:11px;padding:3px;margin:8px 0 20px}
+.seg button{position:relative;z-index:1;height:34px;border-radius:9px;font-size:14px;font-weight:500;color:var(--muted);transition:color .2s}
+.seg button[aria-selected=true]{color:var(--text)}
+.seg .thumb{position:absolute;z-index:0;top:3px;bottom:3px;left:3px;width:calc((100% - 6px)/4);border-radius:9px;background:var(--raised);box-shadow:var(--shadow);transition:transform .28s var(--ease);transform:translateX(calc(var(--i,0) * 100%))}
+
+/* Lists */
+.label{font-size:12px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:0 0 8px 2px}
+.group{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;box-shadow:var(--shadow)}
+.row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 16px;min-height:52px}
+.row+.row{border-top:1px solid var(--line)}
+.row .k{color:var(--muted)}
+.row .v{text-align:right;word-break:break-word;font-variant-numeric:tabular-nums}
+.note{width:100%;text-align:left;display:block;padding:14px 16px;transition:background .15s}
+.note:hover{background:var(--fill)}
+.note+.note{border-top:1px solid var(--line)}
+.note .t{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+.note .pin{display:block;font-size:12px;color:var(--faint);margin-bottom:4px;letter-spacing:.02em}
+.under{display:flex;justify-content:flex-end;margin-top:6px}
+.acts{display:flex;gap:18px}
+.empty{padding:36px 16px;text-align:center;color:var(--muted)}
+.meta{color:var(--faint);font-size:13px;margin:10px 2px 0}
+.meta b{color:var(--muted);font-weight:500}
+.stack>*+*{margin-top:22px}
+.offline{font-size:14px;color:var(--muted);background:var(--fill);border-radius:12px;padding:12px 14px;margin-bottom:18px}
+
+/* Switch */
+.switch{position:relative;width:46px;height:28px;flex:none}
+.switch input{position:absolute;inset:0;opacity:0;margin:0;cursor:pointer}
+.switch span{position:absolute;inset:0;border-radius:999px;background:var(--line-strong);transition:background .2s}
+.switch span::after{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .22s var(--ease)}
+.switch input:checked+span{background:var(--ok)}
+.switch input:checked+span::after{transform:translateX(18px)}
+input[type=time]{border:0;background:transparent;font-size:15px;text-align:right;font-variant-numeric:tabular-nums;padding:0}
+
+/* Sheet */
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.28);opacity:0;pointer-events:none;transition:opacity .25s;z-index:10}
+.scrim.open{opacity:1;pointer-events:auto}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:11;max-width:560px;margin:0 auto;background:var(--raised);border-radius:20px 20px 0 0;
+  box-shadow:var(--sheet-shadow);padding:10px 20px calc(20px + env(safe-area-inset-bottom));transform:translateY(105%);
+  visibility:hidden;transition:transform .34s var(--ease),visibility 0s linear .34s}
+/* Hidden once closed, so it can never peek in or take keyboard focus. */
+.sheet.open{transform:none;visibility:visible;transition:transform .34s var(--ease),visibility 0s}
+.grab{width:36px;height:4px;border-radius:2px;background:var(--line-strong);margin:0 auto 10px}
+.sheet header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.sheet header b{font-weight:600}
+textarea{width:100%;min-height:180px;resize:none;border:0;background:transparent;font-size:17px;line-height:1.5;padding:8px 0;outline:none}
+textarea:focus,textarea:focus-visible{outline:none}
+.sheet footer{display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--line);padding-top:12px;font-size:13px;color:var(--faint)}
+
+/* Controls */
+select{font:inherit;color:inherit;border:0;background:transparent;text-align:right;text-align-last:right;padding:0;max-width:60%;cursor:pointer}
+input[type=range]{width:55%;accent-color:var(--text)}
+.chips{display:flex;gap:8px;flex-wrap:wrap;padding:12px 16px}
+.chip{height:32px;padding:0 12px;border-radius:999px;background:var(--fill);font-size:14px;transition:background .15s}
+.chip[aria-pressed=true]{background:var(--primary);color:var(--on-primary)}
+.hint{display:block;font-size:13px;color:var(--muted);margin-top:2px}
+.hint:empty{display:none}
+.alarm{display:flex;align-items:center;gap:12px;padding:12px 16px}
+.alarm+.alarm{border-top:1px solid var(--line)}
+.alarm>button{flex:1;text-align:left;min-width:0}
+.alarm .at{font-size:24px;font-weight:500;letter-spacing:-.01em;font-variant-numeric:tabular-nums;display:block}
+.alarm .sub{font-size:13px;color:var(--muted);display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.alarm.off .at{color:var(--faint)}
+.alarm[aria-current=true]{background:var(--fill)}
+.days{justify-content:space-between;border-top:1px solid var(--line)}
+.days .chip{width:36px;padding:0}
+.big{font-size:44px;font-weight:500;letter-spacing:-.02em;text-align:center;padding:18px 0 6px;font-variant-numeric:tabular-nums}
+.pair2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.field{width:100%;border:0;background:transparent;font-size:15px;padding:0;text-align:right;outline:none}
+.field:focus-visible{outline:none}
+.net{width:100%;display:flex;justify-content:space-between;align-items:center;gap:12px;text-align:left}
+.net small{color:var(--faint)}
+textarea.msg{min-height:90px;font-size:15px;padding:14px 16px}
+.hint{color:var(--faint);font-size:13px;margin:8px 2px 0}
+
+/* Toast */
+#status{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translate(-50%,16px);opacity:0;z-index:20;
+  background:var(--primary);color:var(--on-primary);font-size:14px;padding:10px 16px;border-radius:999px;box-shadow:var(--shadow);
+  transition:opacity .25s,transform .3s var(--ease);pointer-events:none;max-width:calc(100% - 40px);text-align:center}
+#status.show{opacity:1;transform:translate(-50%,0)}
+#status.err{background:var(--danger);color:#fff}
+
+footer.site{max-width:480px;width:100%;margin:0 auto;padding:0 20px calc(20px + env(safe-area-inset-bottom));font-size:12px;color:var(--faint)}
+footer.site a{color:inherit}
+.kbd{display:none;color:var(--faint);font-size:12px;margin-left:8px}
+/* Laptops and desktops: sidebar navigation, notes as a grid, a centered editor. */
+@media (min-width:860px){
+  .top,main,footer.site{max-width:1040px;padding-left:32px;padding-right:32px}
+  .top{padding-top:22px;padding-bottom:22px}
+  #pair{max-width:420px;margin:0 auto;padding-top:6vh}
+  #app{display:grid;grid-template-columns:200px minmax(0,1fr);column-gap:48px;align-items:start}
+  #app>.seg{grid-column:1;grid-row:1 / span 5;grid-template-columns:1fr;grid-auto-rows:40px;position:sticky;top:24px;margin:0;background:none;padding:0}
+  #app>.seg button{text-align:left;padding:0 14px;height:40px;font-size:15px}
+  #app>.seg .thumb{top:0;bottom:auto;left:0;width:100%;height:40px;background:var(--fill);box-shadow:none;transform:translateY(calc(var(--i,0) * 100%))}
+  #offline,#app>[data-panel]{grid-column:2}
+  #app>[data-panel=time],#app>[data-panel=settings],#app>[data-panel=device]{max-width:560px}
+  #list{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px;background:none;border:0;box-shadow:none;overflow:visible}
+  .note,.note+.note{border:1px solid var(--line);border-radius:var(--r);background:var(--surface);min-height:120px;box-shadow:var(--shadow);transition:border-color .15s,transform .15s var(--ease)}
+  .note:hover{background:var(--surface);border-color:var(--line-strong);transform:translateY(-1px)}
+  .note .t{-webkit-line-clamp:5}
+  .empty{grid-column:1/-1;border:1px dashed var(--line-strong);border-radius:var(--r)}
+  #newNote{width:auto;padding:0 28px}
+  .sheet{left:50%;right:auto;bottom:auto;top:50%;width:min(560px,calc(100% - 64px));border-radius:18px;padding:16px 24px 18px;
+    transform:translate(-50%,-46%) scale(.98);opacity:0;pointer-events:none;
+    transition:transform .28s var(--ease),opacity .2s,visibility 0s linear .28s}
+  .sheet.open{transform:translate(-50%,-50%);opacity:1;pointer-events:auto;transition:transform .28s var(--ease),opacity .2s,visibility 0s}
+  .grab{display:none}
+  textarea{min-height:240px}
+  .kbd{display:inline}
+}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="top">
+  <span class="mark">KortaMod</span>
+  <span class="pill" id="who" hidden><span id="dot" class="dot"></span><span id="whoText">Chromatic</span></span>
+</div>
+
+<main>
+  <section id="pair" class="view" hidden>
+    <div class="hero">
+      <h1>Your Chromatic,<br>from any screen.</h1>
+    </div>
+    <div class="cells" id="cells" aria-hidden="true">
+      <div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="gap"></div>
+      <div class="cell"></div><div class="cell"></div><div class="cell"></div>
+      <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" aria-label="Pairing code shown on your Chromatic">
+    </div>
+    <button class="btn primary wide" id="pairBtn" disabled>Pair</button>
+    <p class="meta">On your Chromatic: <b>Home &rsaquo; Phone &rsaquo; Phone link</b></p>
+  </section>
+
+  <section id="app" hidden>
+    <div class="offline" id="offline" hidden>Chromatic offline</div>
+    <nav class="seg" role="tablist">
+      <span class="thumb" id="thumb"></span>
+      <button role="tab" data-tab="notes" aria-selected="true">Notes</button>
+      <button role="tab" data-tab="time" aria-selected="false">Time</button>
+      <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
+      <button role="tab" data-tab="device" aria-selected="false">Device</button>
+    </nav>
+
+    <div data-panel="notes" class="view">
+      <div class="group" id="list"></div>
+      <button class="btn primary wide" id="newNote" style="margin-top:18px">New</button>
+      <div class="under"><button class="link" id="export" hidden>Export</button></div>
+    </div>
+
+    <div data-panel="time" class="view stack" hidden>
+      <div>
+        <p class="label">Alarms</p>
+        <div class="group" id="alarms"></div>
+        <div id="alarmEdit" hidden>
+          <div class="group" style="margin-top:12px">
+            <div class="row"><label for="alarmAt">Time</label><input type="time" id="alarmAt" required></div>
+            <div class="row"><label for="alarmLabel">Label</label><input class="field" id="alarmLabel" autocomplete="off" maxlength="12" placeholder="None"></div>
+            <div class="chips days" id="alarmDays" role="group" aria-label="Repeat"></div>
+          </div>
+          <button class="btn primary wide" id="alarmSave" style="margin-top:12px">Save</button>
+        </div>
+      </div>
+      <div>
+        <p class="label">Timer</p>
+        <div class="group">
+          <div class="big" id="timerShown">0:00</div>
+          <div class="chips" id="timerChips">
+            <button class="chip" data-s="60">1 min</button><button class="chip" data-s="300">5 min</button>
+            <button class="chip" data-s="600">10 min</button><button class="chip" data-s="1500">25 min</button>
+            <button class="chip" data-s="0">Stopwatch</button>
+          </div>
+        </div>
+        <div class="pair2"><button class="btn primary" id="timerGo">Start</button><button class="btn quiet" id="timerReset">Reset</button></div>
+      </div>
+      <div>
+        <p class="label">Clock</p>
+        <div class="group">
+          <div class="row"><span class="k">Chromatic</span><span class="v" id="devTime">-</span></div>
+          <div class="row"><span class="k">This device</span><span class="v" id="myTime">-</span></div>
+        </div>
+        <button class="btn quiet wide" id="clockSet" style="margin-top:12px">Sync</button>
+      </div>
+    </div>
+
+    <div data-panel="settings" class="view stack" hidden>
+      <div>
+        <p class="label">Display</p>
+        <div class="group">
+          <div class="row"><label for="setBrightness">Brightness</label><input type="range" id="setBrightness" min="1" max="16" data-set="brightness"></div>
+          <div class="row"><span>Night theme</span><label class="switch"><input type="checkbox" data-set="night" aria-label="Night theme"><span></span></label></div>
+          <div class="row"><label for="setPalette">GB palette</label><select id="setPalette" data-set="palette"></select></div>
+          <div class="row"><span>Frame blend</span><label class="switch"><input type="checkbox" data-set="blend" aria-label="Frame blend"><span></span></label></div>
+          <div class="row"><span>LCD color correction</span><label class="switch"><input type="checkbox" data-set="cc_lcd" aria-label="LCD color correction"><span></span></label></div>
+          <div class="row"><span>USB color correction</span><label class="switch"><input type="checkbox" data-set="cc_usb" aria-label="USB color correction"><span></span></label></div>
+          <div class="row"><span>Smooth transition</span><label class="switch"><input type="checkbox" data-set="transit" aria-label="Smooth transition"><span></span></label></div>
+        </div>
+      </div>
+      <div>
+        <p class="label">Controls and sound</p>
+        <div class="group">
+          <div class="row"><span>Silent</span><label class="switch"><input type="checkbox" data-set="silent" aria-label="Silent"><span></span></label></div>
+          <div class="row"><span>D-pad ignores diagonals</span><label class="switch"><input type="checkbox" data-set="dpad4" aria-label="D-pad ignores diagonals"><span></span></label></div>
+          <div class="row"><span>Predictive keyboard</span><label class="switch"><input type="checkbox" data-set="flow" aria-label="Predictive keyboard"><span></span></label></div>
+          <div class="row"><span>12-hour clock</span><label class="switch"><input type="checkbox" data-set="hour12" aria-label="12-hour clock"><span></span></label></div>
+          <div class="row"><label for="setLow">Low battery icon</label><select id="setLow" data-set="low_batt"><option value="0">Show</option><option value="1">Blink</option><option value="2">Hide</option></select></div>
+          <div class="row"><label for="setPlayer">USB player number</label><select id="setPlayer" data-set="player"></select></div>
+        </div>
+      </div>
+      <div>
+        <p class="label">Wi-Fi</p>
+        <div class="group" id="wifiList"></div>
+        <div class="group" style="margin-top:12px">
+          <div class="row"><label for="wifiSsid">Network</label><input class="field" id="wifiSsid" autocomplete="off" maxlength="32" placeholder="Name"></div>
+          <div class="row"><label for="wifiPass">Password</label><input class="field" id="wifiPass" type="password" autocomplete="off" maxlength="63" placeholder="None"></div>
+        </div>
+        <button class="btn quiet wide" id="wifiJoin" style="margin-top:12px">Join</button>
+        <p class="hint">If it can't join, it returns to the current network.</p>
+      </div>
+    </div>
+
+    <div data-panel="device" class="view stack" hidden>
+      <div>
+        <button class="btn primary wide" id="findMe">Find my Chromatic</button>
+      </div>
+      <div>
+        <p class="label">Message</p>
+        <div class="group"><textarea class="msg" id="msgText" maxlength="200" aria-label="Message to show on the Chromatic"></textarea></div>
+        <button class="btn quiet wide" id="msgSend" style="margin-top:12px">Show on Chromatic</button>
+      </div>
+      <div>
+        <div class="group">
+          <div class="row"><span>Notifications<span class="hint" id="notifyHint"></span></span><label class="switch"><input type="checkbox" id="notify" aria-label="Notifications"><span></span></label></div>
+        </div>
+        <button class="btn quiet wide" id="install" style="margin-top:12px" hidden>Install app</button>
+      </div>
+      <div class="group" id="info"></div>
+      <button class="link danger" id="unpair">Unpair</button>
+    </div>
+  </section>
+</main>
+
+<div class="scrim" id="scrim"></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" data-panel="edit">
+  <div class="grab"></div>
+  <header>
+    <button class="link" id="cancel">Cancel</button>
+    <b id="sheetTitle">Note</b>
+    <button class="link" id="save" style="color:var(--text);font-weight:600">Save</button>
+  </header>
+  <textarea id="text" spellcheck="true" aria-labelledby="sheetTitle"></textarea>
+  <footer><span><span id="count"></span><span class="kbd">&#8984; Enter to save</span></span><span class="acts"><button class="link" id="pin">Pin</button><button class="link danger" id="delete">Delete</button></span></footer>
+</div>
+
+<div id="status" role="status" aria-live="polite"></div>
+<footer class="site">Made by Zakaria Kortam &middot; Not affiliated with ModRetro &middot; <a href="https://github.com/zkortam/KortaMod" rel="noopener">Source</a></footer>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const TOKEN = "kortamod.token";
+let token = localStorage.getItem(TOKEN) || "";
+let state = null, online = false, awake = false, loaded = false;
+let editing = -1, tab = "notes", toastTimer = 0;
+
+/* Mirrors korta_clean_text on the device, so the counter matches what is kept. */
+const LATIN = "AAAAAAACEEEEIIIIDNOOOOOxOUUUUYTsaaaaaaaceeeeiiiidnooooo/ouuuuyty";
+function clean(s) {
+  let out = "";
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    if (c < 128) out += (c === 10 || c === 13 || c === 9) ? " " : (c < 32 || c === 127) ? "?" : ch;
+    else if (c >= 0xC0 && c <= 0xFF) out += LATIN[c - 0xC0];
+    else if (c === 0xA0) out += " ";
+    else if (c === 0x2018 || c === 0x2019) out += "'";
+    else if (c === 0x201C || c === 0x201D) out += '"';
+    else if (c === 0x2013 || c === 0x2014) out += "-";
+    else if (c === 0x2022) out += "*";
+    else if (c === 0x2026) out += ".";
+    else out += "?";
+  }
+  return out;
+}
+
+function say(text, kind) {
+  const s = $("status");
+  clearTimeout(toastTimer);
+  if (!text) { s.classList.remove("show"); return; }
+  s.textContent = text;
+  s.className = "show" + (kind === "err" ? " err" : "");
+  toastTimer = setTimeout(() => s.classList.remove("show"), kind === "err" ? 4200 : 2200);
+}
+
+async function api(method, path, body) {
+  const headers = {};
+  if (token) headers.Authorization = "Bearer " + token;
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  /* A Chromatic that isn't checking in fast yet takes up to ~20 s to answer. */
+  if (method !== "GET" && online && !awake) say("Waking your Chromatic\u2026");
+  let res;
+  try { res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: "no-store" }); }
+  catch (e) { throw new Error("No connection."); }
+  let data = {};
+  try { data = await res.json(); } catch (e) {}
+  if (res.status === 401 && token) { forget(); throw new Error("This browser was unpaired."); }
+  if (!res.ok) { const err = new Error(data.error || "Something went wrong."); err.status = res.status; throw err; }
+  return data;
+}
+
+function forget() { token = ""; localStorage.removeItem(TOKEN); state = null; loaded = false; show(); }
+
+function show() {
+  $("pair").hidden = !!token;
+  $("app").hidden = !token;
+  $("who").hidden = !token;
+  if (token) refresh(); else setTimeout(() => $("code").focus(), 50);
+}
+
+function setTab(name) {
+  tab = name;
+  const buttons = [...document.querySelectorAll(".seg button")];
+  buttons.forEach((b, i) => { b.setAttribute("aria-selected", b.dataset.tab === name); if (b.dataset.tab === name) $("thumb").style.setProperty("--i", i); });
+  for (const p of document.querySelectorAll("#app [data-panel]")) p.hidden = p.dataset.panel !== name;
+  render();
+}
+
+async function refresh() {
+  if (!token || editing >= 0) return;
+  try {
+    const r = await api("GET", loaded ? "/api/state" : "/api/state?load=1");
+    loaded = true;
+    online = r.online;
+    awake = !!r.awake;
+    if (r.state) state = r.state;
+    render();
+  } catch (e) { if (token) say(e.message, "err"); }
+}
+
+const pad = n => String(n).padStart(2, "0");
+const PALETTES = ["Default", "Brown", "Blue", "Pastel", "Green", "Red", "Dark blue", "Orange", "Dark green", "Dark brown", "Gray", "Yellow", "Negative", "DMG 1", "DMG 2"];
+PALETTES.forEach((n, i) => $("setPalette").add(new Option(n, i)));
+for (let i = 1; i <= 8; i++) $("setPlayer").add(new Option(String(i), i));
+let timerAt = 0;  /* when the last timer reading arrived */
+function fmt(ms) {
+  const t = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, sec = t % 60;
+  return (h ? h + ":" + pad(m) : m) + ":" + pad(sec);
+}
+function tickTimer() {
+  if (!state || !state.timer) return;
+  const t = state.timer, gone = t.running ? Date.now() - timerAt : 0;
+  $("timerShown").textContent = t.done ? "Done" : fmt(t.countdown ? t.ms - gone : t.ms + gone);
+}
+setInterval(tickTimer, 250);
+
+function row(k, v) {
+  const r = document.createElement("div"); r.className = "row";
+  const a = document.createElement("span"); a.className = "k"; a.textContent = k;
+  const b = document.createElement("span"); b.className = "v"; b.textContent = v;
+  r.append(a, b);
+  return r;
+}
+
+function render() {
+  $("offline").hidden = online || !state;
+  $("dot").className = "dot" + (online ? awake ? " on" : " wake" : "");
+  for (const b of ["save", "delete", "alarmSave", "clockSet"]) $(b).disabled = !online;
+  if (!state) { $("whoText").textContent = online ? "Connected" : "Offline"; $("newNote").disabled = true; return; }
+  const d = state.device;
+  $("whoText").textContent = online ? "Connected" + (d.battery !== undefined ? " \u00b7 " + d.battery + "%" : "") : "Offline";
+  const items = state.notes.items, pinned = state.notes.pinned || 0, list = $("list");
+  /* Rebuild only when the notes change, so a tap never lands on a replaced card. */
+  const shape = JSON.stringify([items, pinned]);
+  if (list.dataset.shape !== shape) {
+  list.dataset.shape = shape;
+  list.textContent = "";
+  if (!items.length) { const e = document.createElement("div"); e.className = "empty"; e.textContent = "No notes"; list.appendChild(e); }
+  items.forEach((text, i) => {
+    const b = document.createElement("button"); b.className = "note";
+    const t = document.createElement("div"); t.className = "t"; t.textContent = text;
+    if (i < pinned) { const p = document.createElement("span"); p.className = "pin"; p.textContent = "Pinned"; b.append(p); }
+    b.append(t);
+    b.onclick = () => openEditor(i);
+    list.appendChild(b);
+  });
+  }
+  $("newNote").disabled = !online || items.length >= state.notes.slots;
+  $("export").hidden = !items.length;
+  renderAlarms();
+  const zone = state.clock.zone_minutes;
+  const dev = new Date((state.clock.epoch + zone * 60) * 1000);
+  const tz = "UTC" + (zone < 0 ? "−" : "+") + Math.floor(Math.abs(zone) / 60) + (Math.abs(zone) % 60 ? ":" + pad(Math.abs(zone) % 60) : "");
+  $("devTime").textContent = state.clock.known ? pad(dev.getUTCHours()) + ":" + pad(dev.getUTCMinutes()) + "  " + tz : "Not set";
+  const me = new Date(), myZone = -me.getTimezoneOffset();
+  $("myTime").textContent = pad(me.getHours()) + ":" + pad(me.getMinutes()) + "  UTC" + (myZone < 0 ? "−" : "+") + Math.floor(Math.abs(myZone) / 60) + (Math.abs(myZone) % 60 ? ":" + pad(Math.abs(myZone) % 60) : "");
+  if (state.settings) {
+    for (const el of document.querySelectorAll("[data-set]")) {
+      if (el === document.activeElement || el.dataset.busy) continue;
+      const v = state.settings[el.dataset.set];
+      if (el.type === "checkbox") el.checked = !!v; else el.value = String(v);
+      el.disabled = !online || (el.dataset.set === "palette" && state.settings.gbc);
+    }
+  }
+  if (state.timer) {
+    timerAt = Date.now();
+    const t = state.timer;
+    $("timerGo").textContent = t.running ? "Stop" : "Start";
+    for (const c of document.querySelectorAll("#timerChips .chip")) {
+      const s = Number(c.dataset.s);
+      c.setAttribute("aria-pressed", s ? (t.countdown && t.set_s === s) : !t.countdown);
+      c.disabled = !online || t.running;
+    }
+    $("timerGo").disabled = $("timerReset").disabled = !online;
+    tickTimer();
+  }
+  if (state.wifi) {
+    const w = state.wifi, list = $("wifiList"), shape = JSON.stringify(w);
+    if (list.dataset.shape !== shape) {
+      list.dataset.shape = shape;
+      list.textContent = "";
+      const nets = w.networks.length ? w.networks : (w.ssid ? [{ ssid: w.ssid, locked: true }] : []);
+      if (!nets.length) { const e = document.createElement("div"); e.className = "empty"; e.textContent = "No networks seen"; list.appendChild(e); }
+      for (const n of nets) {
+        const b = document.createElement("button"); b.className = "row net";
+        const name = document.createElement("span"); name.textContent = n.ssid;
+        const tag = document.createElement("small");
+        tag.textContent = n.ssid === w.ssid && w.phase === "online" ? "Connected" : n.locked ? "Locked" : "Open";
+        b.append(name, tag);
+        b.onclick = () => { $("wifiSsid").value = n.ssid; $("wifiPass").value = ""; (n.locked ? $("wifiPass") : $("wifiJoin")).focus(); };
+        list.appendChild(b);
+      }
+    }
+  }
+  for (const b of ["wifiJoin", "findMe", "msgSend"]) $(b).disabled = !online;
+  const info = $("info"); info.textContent = "";
+  info.append(row("Name", d.name), row("Battery", d.battery !== undefined ? d.battery + "%" + (d.charging ? ", charging" : "") : "-"),
+    row("Firmware", d.mcu || "-"), row("FPGA", d.fpga || "-"));
+}
+
+/* Alarms: four slots, each a row with its switch; tapping a row edits it below. */
+const DAY = ["M", "T", "W", "T", "F", "S", "S"], DAY_NAME = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+let alarmSel = -1;
+DAY.forEach((d, i) => {
+  const c = document.createElement("button"); c.className = "chip"; c.textContent = d;
+  c.setAttribute("aria-label", DAY_NAME[i]); c.setAttribute("aria-pressed", "false");
+  c.onclick = () => c.setAttribute("aria-pressed", c.getAttribute("aria-pressed") === "true" ? "false" : "true");
+  $("alarmDays").appendChild(c);
+});
+function hm(h, m) {
+  if (!state.clock || !state.clock.hour12) return pad(h) + ":" + pad(m);
+  return ((h % 12) || 12) + ":" + pad(m) + (h < 12 ? " AM" : " PM");
+}
+function repeatText(d) {
+  if (!d) return "Once";
+  if (d === 127) return "Every day";
+  if (d === 31) return "Weekdays";
+  if (d === 96) return "Weekends";
+  return DAY_NAME.filter((_, i) => d >> i & 1).join(" ");
+}
+function renderAlarms() {
+  const list = state.alarms || [], box = $("alarms");
+  const shape = JSON.stringify([list, alarmSel, online, state.clock && state.clock.hour12]);
+  if (box.dataset.shape === shape) return;
+  box.dataset.shape = shape;
+  box.textContent = "";
+  list.forEach((a, i) => {
+    const r = document.createElement("div"); r.className = "alarm" + (a.on ? "" : " off");
+    r.setAttribute("aria-current", i === alarmSel);
+    const b = document.createElement("button");
+    const at = document.createElement("span"); at.className = "at"; at.textContent = hm(a.hour, a.minute);
+    const sub = document.createElement("span"); sub.className = "sub"; sub.textContent = (a.label ? a.label + " \u00b7 " : "") + repeatText(a.days);
+    b.append(at, sub);
+    b.onclick = () => { alarmSel = alarmSel === i ? -1 : i; fillAlarm(); renderAlarms(); };
+    const sw = document.createElement("label"); sw.className = "switch";
+    const inp = document.createElement("input"); inp.type = "checkbox"; inp.checked = a.on; inp.disabled = !online;
+    inp.setAttribute("aria-label", "Alarm " + (i + 1) + " on");
+    inp.onchange = async () => { if (!(await setAlarm(i, { ...a, on: inp.checked }))) inp.checked = a.on; };
+    sw.append(inp, document.createElement("span"));
+    r.append(b, sw);
+    box.appendChild(r);
+  });
+  $("alarmEdit").hidden = alarmSel < 0;
+}
+function fillAlarm() {
+  const a = (state.alarms || [])[alarmSel];
+  if (!a) return;
+  $("alarmAt").value = pad(a.hour) + ":" + pad(a.minute);
+  $("alarmLabel").value = a.label || "";
+  [...$("alarmDays").children].forEach((c, i) => c.setAttribute("aria-pressed", String(!!(a.days >> i & 1))));
+}
+async function setAlarm(index, a) {
+  try {
+    await api("PUT", "/api/alarm", { index, on: a.on, hour: a.hour, minute: a.minute, days: a.days, label: a.label || "" });
+    await refresh();
+    return true;
+  } catch (e) { say(e.message, "err"); return false; }
+}
+
+function openEditor(i) {
+  editing = i;
+  const isNew = i >= state.notes.items.length;
+  $("text").value = isNew ? "" : state.notes.items[i];
+  $("sheetTitle").textContent = "Note";
+  $("delete").hidden = $("pin").hidden = isNew;
+  $("pin").textContent = i < (state.notes.pinned || 0) ? "Unpin" : "Pin";
+  $("scrim").classList.add("open");
+  $("sheet").classList.add("open");
+  count();
+  setTimeout(() => $("text").focus(), 280);
+}
+function closeEditor() {
+  editing = -1;
+  $("scrim").classList.remove("open");
+  $("sheet").classList.remove("open");
+  $("text").blur();
+  refresh();
+}
+function count() {
+  const kept = clean($("text").value).length, cap = state ? state.notes.capacity : 200;
+  $("count").textContent = Math.min(kept, cap) + " / " + cap;
+}
+
+async function saveNotes(items, pinned, done) {
+  try {
+    await api("PUT", "/api/notes", { rev: state.notes.rev, items, pinned });
+    say(done);
+    closeEditor();
+  } catch (e) {
+    if (e.status === 409) {
+      const keep = editing; editing = -1; await refresh(); editing = keep;
+      say("Changed on the Chromatic. Your text is kept, save again.", "err");
+    } else say(e.message, "err");
+  }
+}
+
+/* Pairing code cells mirror one real input, so typing, paste and autofill all work. */
+function paintCode() {
+  const digits = $("code").value.replace(/\D/g, "").slice(0, 6);
+  const cells = document.querySelectorAll("#cells .cell");
+  cells.forEach((c, i) => { c.textContent = digits[i] || ""; c.classList.toggle("cur", document.activeElement === $("code") && i === Math.min(digits.length, 5)); });
+  $("pairBtn").disabled = digits.length !== 6;
+  return digits;
+}
+$("code").addEventListener("input", () => { if (paintCode().length === 6) $("pairBtn").click(); });
+$("code").addEventListener("focus", paintCode);
+$("code").addEventListener("blur", paintCode);
+$("code").addEventListener("keydown", e => { if (e.key === "Enter") $("pairBtn").click(); });
+
+$("pairBtn").onclick = async () => {
+  const code = paintCode();
+  if (code.length !== 6 || $("pairBtn").dataset.busy) return;
+  $("pairBtn").dataset.busy = "1";
+  $("pairBtn").textContent = "Pairing";
+  try {
+    const r = await api("POST", "/api/pair", { code });
+    token = r.token; localStorage.setItem(TOKEN, token);
+    $("code").value = ""; paintCode(); say("Paired"); show();
+  } catch (e) { say(e.message, "err"); $("code").select(); }
+  delete $("pairBtn").dataset.busy;
+  $("pairBtn").textContent = "Pair";
+};
+for (const b of document.querySelectorAll(".seg button")) b.onclick = () => setTab(b.dataset.tab);
+$("newNote").onclick = () => openEditor(state.notes.items.length);
+$("cancel").onclick = closeEditor;
+$("scrim").onclick = closeEditor;
+/* Keyboard: Esc closes the editor, Cmd/Ctrl+Enter saves, N starts a note. */
+document.addEventListener("keydown", e => {
+  if (editing >= 0) {
+    if (e.key === "Escape") closeEditor();
+    else if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !$("save").disabled) { e.preventDefault(); $("save").click(); }
+    return;
+  }
+  const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement && document.activeElement.tagName);
+  if (!typing && token && tab === "notes" && (e.key === "n" || e.key === "N") && !e.metaKey && !e.ctrlKey && !$("newNote").disabled) {
+    e.preventDefault(); $("newNote").click();
+  }
+});
+$("text").oninput = count;
+$("save").onclick = () => {
+  const text = clean($("text").value).trim().slice(0, state.notes.capacity);
+  if (!text) { say("Write something first.", "err"); return; }
+  const items = state.notes.items.slice(), pinned = state.notes.pinned || 0;
+  /* New notes go first, below the pinned ones, as on the Chromatic. */
+  if (editing >= items.length) items.splice(pinned, 0, text); else items[editing] = text;
+  saveNotes(items, pinned, "Saved");
+};
+$("delete").onclick = () => {
+  if (!confirm("Delete this note?")) return;
+  const items = state.notes.items.slice(), pinned = state.notes.pinned || 0;
+  items.splice(editing, 1);
+  saveNotes(items, editing < pinned ? pinned - 1 : pinned, "Deleted");
+};
+/* Pinning moves a note to the end of the pinned block; unpinning to the top of the rest. */
+$("pin").onclick = () => {
+  const items = state.notes.items.slice();
+  let pinned = state.notes.pinned || 0;
+  const typed = clean($("text").value).trim().slice(0, state.notes.capacity);
+  const [note] = items.splice(editing, 1);
+  const text = typed || note;
+  if (editing < pinned) { pinned--; items.splice(pinned, 0, text); saveNotes(items, pinned, "Unpinned"); }
+  else { items.splice(pinned, 0, text); saveNotes(items, pinned + 1, "Pinned"); }
+};
+$("export").onclick = () => {
+  const items = state.notes.items;
+  const body = items.map((t, i) => (i < (state.notes.pinned || 0) ? "[Pinned] " : "") + t).join("\n\n") + "\n";
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([body], { type: "text/plain" }));
+  a.download = (state.device.name || "Chromatic").replace(/\s+/g, "-") + "-notes.txt";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+$("alarmSave").onclick = async () => {
+  const [h, m] = ($("alarmAt").value || "").split(":").map(Number);
+  if (!(h >= 0 && h <= 23 && m >= 0 && m <= 59)) { say("Pick a time.", "err"); return; }
+  const days = [...$("alarmDays").children].reduce((d, c, i) => d | (c.getAttribute("aria-pressed") === "true" ? 1 << i : 0), 0);
+  const label = clean($("alarmLabel").value).trim().slice(0, 12);
+  /* Saving an alarm turns it on: that is almost always why it was edited. */
+  if (await setAlarm(alarmSel, { on: true, hour: h, minute: m, days, label })) { say("Alarm saved"); alarmSel = -1; renderAlarms(); }
+};
+$("clockSet").onclick = async () => {
+  try { await api("PUT", "/api/clock", { zone_minutes: -new Date().getTimezoneOffset() }); say("Clock synced"); setTimeout(refresh, 400); }
+  catch (e) { say(e.message, "err"); }
+};
+/* Settings apply on change; a refusal puts the control back. */
+for (const el of document.querySelectorAll("[data-set]")) {
+  el.addEventListener("change", async () => {
+    const key = el.dataset.set;
+    const value = el.type === "checkbox" ? el.checked : Number(el.value);
+    el.dataset.busy = "1";
+    try { await api("PUT", "/api/settings", { key, value }); state.settings[key] = value; }
+    catch (e) { say(e.message, "err"); if (el.type === "checkbox") el.checked = !value; else el.value = String(state.settings[key]); }
+    delete el.dataset.busy;
+  });
+}
+for (const c of document.querySelectorAll("#timerChips .chip")) {
+  c.onclick = async () => {
+    const s = Number(c.dataset.s);
+    try { await api("POST", "/api/timer", { action: "set", countdown: s > 0, seconds: s || 0 }); refresh(); }
+    catch (e) { say(e.message, "err"); }
+  };
+}
+$("timerGo").onclick = async () => {
+  try { await api("POST", "/api/timer", { action: state.timer.running ? "stop" : "start" }); refresh(); }
+  catch (e) { say(e.message, "err"); }
+};
+$("timerReset").onclick = async () => {
+  try { await api("POST", "/api/timer", { action: "reset" }); refresh(); }
+  catch (e) { say(e.message, "err"); }
+};
+$("wifiJoin").onclick = async () => {
+  const ssid = $("wifiSsid").value.trim(), password = $("wifiPass").value;
+  if (!ssid) { say("Enter a network name.", "err"); return; }
+  if (password && password.length < 8) { say("Wi-Fi passwords have at least 8 characters.", "err"); return; }
+  try { await api("POST", "/api/wifi", { ssid, password }); $("wifiPass").value = ""; say("Joining " + ssid); }
+  catch (e) { say(e.message, "err"); }
+};
+$("findMe").onclick = async () => {
+  try { await api("POST", "/api/message", { text: "", find: true }); say("Flashing on your Chromatic"); }
+  catch (e) { say(e.message, "err"); }
+};
+$("msgSend").onclick = async () => {
+  const text = $("msgText").value.trim();
+  if (!text) { say("Write a message first.", "err"); return; }
+  try { await api("POST", "/api/message", { text }); $("msgText").value = ""; say("Shown on your Chromatic"); }
+  catch (e) { say(e.message, "err"); }
+};
+$("unpair").onclick = async () => {
+  if (!confirm("Unpair this browser?")) return;
+  try { await api("POST", "/api/unpair"); } catch (e) {}
+  swReady.then(r => r && r.pushManager.getSubscription()).then(sub => sub && sub.unsubscribe()).catch(() => {});
+  forget(); say("Unpaired");
+};
+/* Installing and notifications. iPhone allows push only in the installed app. */
+const pushable = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+let installEvent = null, swReady = "serviceWorker" in navigator ? navigator.serviceWorker.register("/sw.js").then(() => navigator.serviceWorker.ready).catch(() => null) : Promise.resolve(null);
+addEventListener("beforeinstallprompt", e => { e.preventDefault(); installEvent = e; $("install").hidden = false; });
+addEventListener("appinstalled", () => { $("install").hidden = true; say("Installed"); });
+$("install").onclick = async () => { if (!installEvent) return; installEvent.prompt(); await installEvent.userChoice; installEvent = null; $("install").hidden = true; };
+function b64(key) {
+  const s = atob(key.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - key.length % 4) % 4));
+  return Uint8Array.from(s, c => c.charCodeAt(0));
+}
+async function paintNotify() {
+  const reg = await swReady;
+  const sub = reg && pushable ? await reg.pushManager.getSubscription() : null;
+  $("notify").checked = !!sub && Notification.permission === "granted";
+  $("notify").disabled = !pushable;
+  $("notifyHint").textContent = !pushable ? (ios && !standalone ? "Add to Home Screen first, then open it from there" : "Not supported in this browser")
+    : Notification.permission === "denied" ? "Blocked in browser settings" : "Alarms, timers and low battery";
+}
+$("notify").onchange = async () => {
+  const on = $("notify").checked;
+  try {
+    const reg = await swReady;
+    if (!reg) throw new Error("Not supported in this browser.");
+    let sub = await reg.pushManager.getSubscription();
+    if (on) {
+      if (await Notification.requestPermission() !== "granted") throw new Error("Notifications are blocked.");
+      const { key } = await api("GET", "/api/push");
+      sub = sub || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64(key) });
+      await api("POST", "/api/push", { subscription: sub.toJSON() });
+      say("Notifications on");
+    } else {
+      await api("DELETE", "/api/push");
+      if (sub) await sub.unsubscribe();
+      say("Notifications off");
+    }
+  } catch (e) { say(e.message, "err"); }
+  paintNotify();
+};
+paintNotify();
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+setInterval(() => { if (!document.hidden) refresh(); }, 4000);
+paintCode();
+show();
+</script>
+</body>
+</html>

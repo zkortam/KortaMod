@@ -2,7 +2,7 @@
 
 KortaMod adds a compact app launcher and utilities to the Chromatic's Menu screen. This release is for the **Chromatic v4.2 firmware generation with the ESP32 MCU app `0.13.4` and stock FPGA `18.8`**. It has been installed on one physical Chromatic. The installer checks the USB device, MCU version, and partition layout before writing.
 
-**Current MCU build:** `0.13.4-korta5` includes the reliability and size fixes in [AUDIT.md](AUDIT.md). It was flashed and identified through the physical Chromatic's USB console. Host tests and the ESP32 build pass. The stock FPGA audio limitations below remain.
+**Current build:** `0.13.4-korta7`, tested on a physical Chromatic (host tests, an exhaustive UI model check, and end-to-end tests against the live companion site). Release ZIPs on the Releases page may contain an earlier build until the next release is cut.
 
 ## Install in three steps
 
@@ -29,9 +29,22 @@ Press the physical **Menu** button on the Chromatic to open KortaMod after it re
 
 The wheel controls **Media**. The volume panel's Left/Right controls adjust **System** or **Ring** independently; Up/Down chooses the row. Media is shown for reference and follows the wheel. B closes the panel.
 
-Home has two pages. Page 1 has Game, Notes, Clock, Calc, Files, Settings, Flash, Dice, and Coin. Page 2 has Count, Convert, Color, and Player. Notes persist on the device. Explore searches apps with the on-screen keyboard.
+Home has two pages. Page 1 has Game, Notes, Clock, Calc, Files, Settings, Dice, Coin, and Count. Page 2 has Flash, Convert, Color, and Phone. Explore searches apps with the on-screen keyboard.
 
-The clock follows the laptop's local time when you install or run **SyncClock.command** (Mac), **SyncClock.bat** (Windows), or **SyncClock.sh** (Linux) with the Chromatic plugged in. The UTC offset is saved, including half-hour offsets. The Chromatic does not keep accurate time through a full power loss without a new USB sync or an online time source. Run SyncClock after a power cycle, travel, or a daylight-saving change if its clock is wrong.
+- **Notes:** up to 16, kept on the device. Pin a note to keep it at the top.
+- **Alarms:** four, each with its own time, label, and repeat (once, daily, weekdays, weekends, or any days set from the site). A one-time alarm turns itself off after it rings.
+- **Timer and stopwatch**, **clock** with time zone and 12/24-hour display.
+
+The clock follows the laptop's local time when you install or run **SyncClock.command** (Mac), **SyncClock.bat** (Windows), or **SyncClock.sh** (Linux) with the Chromatic plugged in. The UTC offset is saved, including half-hour offsets. The Chromatic does not keep accurate time through a full power loss without a new USB sync or the phone link. Run SyncClock after a power cycle, travel, or a daylight-saving change if its clock is wrong.
+
+## Phone link
+
+Manage your Chromatic from **[kortamod.vercel.app](https://kortamod.vercel.app)** on any phone or computer. Your phone and the Chromatic don't need to be on the same network.
+
+1. On the Chromatic, open **Home → Phone** and switch **Phone link** on (it turns Wi-Fi on; pick a network in Settings → Wi-Fi if none is saved).
+2. Enter the 6-digit code it shows on the site. The browser stays paired; **Forget phones** on the Chromatic revokes every browser.
+
+From the site: edit, pin, and export notes with a real keyboard; set alarms and the timer; change settings; move the Chromatic to another Wi-Fi network (it returns to the old one if the new one fails); show a message on it or flash it to find it. Install the site as an app to get notifications when an alarm or timer rings or the battery runs low (on iPhone, add it to the Home Screen first). Design and security: [docs/phone-link.md](docs/phone-link.md). The site's source is in `cloud/`.
 
 ## Restore your Chromatic
 
@@ -51,7 +64,7 @@ Backups made with v0.1.0 or v0.1.1 have no identity `.json`. To restore one, add
 
 - The public image is **MCU only**. FPGA `18.8` remains stock. Game sound can continue while KortaMod Home is visible, and interface sounds are not audible through the speaker. The System and Ring values are stored separately, but an FPGA audio mixer is required for them to be heard independently. The mixer source is in `source/fpga/` and is not part of this release.
 - The stock FPGA owns the physical Menu and cartridge path. KortaMod is a Menu tab, not a boot replacement.
-- Files and Player are early interfaces. SD card file access, cartridge save management, Bluetooth, IR, and boot-to-Home are not yet implemented.
+- Files is an early interface. SD card file access, cartridge save management, Bluetooth, IR, and boot-to-Home are not yet implemented.
 - The app version and partition checks stop installation on unknown firmware. A future release must be built and tested for each additional hardware and firmware combination.
 
 ## Build from source
@@ -62,16 +75,20 @@ Backups made with v0.1.0 or v0.1.1 have no identity `.json`. To restore one, add
 bash source/mcu/build.sh
 ```
 
-The build losslessly converts stock RGB565 images to indexed LVGL images before compiling. The output is `source/mcu/build-tree/build/mcu_fw.bin`. `source/mcu/test_core.c` contains host-side behavior tests:
+The build losslessly converts stock RGB565 images to indexed LVGL images before compiling. The output is `source/mcu/build-tree/build/mcu_fw.bin`. `source/mcu/test_core.c` contains host-side behavior tests and `source/mcu/test_model.c` explores every reachable UI state to a fixed depth, checking navigation, storage, brightness, and alert invariants:
 
 ```sh
 cc -std=c11 -Wall -Wextra -Werror -I source/mcu/extra/components/osd source/mcu/extra/components/osd/kortamod_core.c source/mcu/test_core.c -o /tmp/kortamod-test
 /tmp/kortamod-test
+cc -std=c11 -O2 -I source/mcu/extra/components/osd source/mcu/extra/components/osd/kortamod_core.c source/mcu/test_model.c -o /tmp/kortamod-model
+/tmp/kortamod-model
 ```
+
+The companion site's relay logic is tested with `cd cloud && npm install && npm test`.
 
 `source/fpga/` holds experimental, **unbuilt and unflashed** audio mixer changes against ModRetro's FPGA commit `a01aa375147943cbcd4a41f41585220d55e0c28a`. They are published for development, not included in the installer. Building that project requires the Gowin toolchain and license.
 
-The prebuilt MCU app SHA-256 is `9a8352aa06963b6a4bff2435b6f3d1ec28fae8bcf6352a820cc8ee530ce1ac7a`. The installer pins and verifies this hash. `firmware/partition-table.bin` is used for a read-only compatibility comparison.
+The prebuilt MCU app SHA-256 is `ec6dc63a41fd0d5ae666df3bc2aaae3232820035ed1cd182493d7a534f836749`. The installer pins and verifies this hash. `firmware/partition-table.bin` is used for a read-only compatibility comparison.
 
 ## Work on the installer
 

@@ -21,7 +21,7 @@ APP_OFFSET = 0x10000
 APP_BYTES = 1024 * 1024
 PART_OFFSET = 0x8000
 USB_ID = (0x374E, 0x0101)
-APP_SHA256 = "9a8352aa06963b6a4bff2435b6f3d1ec28fae8bcf6352a820cc8ee530ce1ac7a"
+APP_SHA256 = "ec6dc63a41fd0d5ae666df3bc2aaae3232820035ed1cd182493d7a534f836749"
 PART_SHA256 = "7f00b6c042a89b15b0cac534f82ed988caf29278ff5700b0c511eb1b5bb7c820"
 
 
@@ -56,7 +56,7 @@ def check_image(header: bytes, app_head: bytes, part: bytes) -> str:
     if part[: len(expected_part)] != expected_part:
         raise RuntimeError("Partition layout differs from stock Chromatic v4.2; installation stopped")
     version = app_version(app_head)
-    if version not in ("0.13.4", "0.13.4-korta3", "0.13.4-korta4", "0.13.4-korta5"):
+    if version not in ("0.13.4",) + tuple(f"0.13.4-korta{n}" for n in range(3, 8)):
         raise RuntimeError(f"MCU version {version!r} is untested; installation stopped")
     return version
 
