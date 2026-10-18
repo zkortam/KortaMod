@@ -21,8 +21,20 @@ APP_OFFSET = 0x10000
 APP_BYTES = 1024 * 1024
 PART_OFFSET = 0x8000
 USB_ID = (0x374E, 0x0101)
-APP_SHA256 = "ec6dc63a41fd0d5ae666df3bc2aaae3232820035ed1cd182493d7a534f836749"
+APP_SHA256 = "f0edaf20b48f68974145f9bbdaf37b741e66aaf616918f684921f454f28192c1"
 PART_SHA256 = "7f00b6c042a89b15b0cac534f82ed988caf29278ff5700b0c511eb1b5bb7c820"
+# KortaMod layout: stock up to factory, plus otadata, an update slot and games.
+KORTA_PART_SHA256 = "89b948ea4b4733b78a7d100d2e622efef37d854036071134ef05e1b36d2c30aa"
+OTADATA = (0x110000, 0x2000)
+GAMES = (0x220000, 0x80000)
+VERSION_RE = re.compile(r"^0\.13\.4(-korta[3-9]|-korta[1-9][0-9])?$")
+# Return to stock: ModRetro's own v4.2 MCU release, a full image from 0x0. Its app
+# (at 0x10000) is byte-for-byte the factory app of a stock Chromatic v4.2.
+STOCK_URL = "https://github.com/ModRetro/oss-chromatic-console-mcu/releases/download/v4.2/v0.13.4.bin"
+STOCK_FILE_SHA256 = "f936c98b7d5e07299c0e0441d1f99dd88c4be875188e5cda14fc66a3f4ca84a8"
+STOCK_APP_SHA256 = "006fb703269746e9ae5392cb45b40715a466f4f266d2a711c09a6db28f572c50"
+STOCK_FILE_MAX = 2 * 1024 * 1024
+KORTA_AREA = (0x110000, 0x190000)   # otadata, the update slot and games: unused by stock
 
 
 def resource(name: str) -> Path:
@@ -31,8 +43,8 @@ def resource(name: str) -> Path:
 
 
 def verify_package() -> tuple[Path, Path]:
-    app, part = resource("mcu_fw.bin"), resource("partition-table.bin")
-    for path, expected in ((app, APP_SHA256), (part, PART_SHA256)):
+    app, part, korta = resource("mcu_fw.bin"), resource("partition-table.bin"), resource("partition-table-korta.bin")
+    for path, expected in ((app, APP_SHA256), (part, PART_SHA256), (korta, KORTA_PART_SHA256)):
         if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
             raise RuntimeError(f"Firmware package is missing or damaged: {path.name}")
     if not 0x50 <= app.stat().st_size <= APP_BYTES:
@@ -47,16 +59,24 @@ def app_version(data: bytes) -> str:
     return data[0x30:0x50].split(b"\0", 1)[0].decode("ascii", "replace")
 
 
+def layout(part: bytes) -> str:
+    """'stock' or 'korta' for the partition table read at 0x8000."""
+    for name, filename, expected in (("stock", "partition-table.bin", PART_SHA256),
+                                     ("korta", "partition-table-korta.bin", KORTA_PART_SHA256)):
+        reference = resource(filename).read_bytes()
+        if hashlib.sha256(reference).hexdigest() != expected:
+            raise RuntimeError("Partition compatibility reference is damaged")
+        if part[: len(reference)] == reference:
+            return name
+    raise RuntimeError("Partition layout differs from stock Chromatic v4.2; installation stopped")
+
+
 def check_image(header: bytes, app_head: bytes, part: bytes) -> str:
     if len(header) < 0x20 or header[0] != 0xE9:
         raise RuntimeError("The connected MCU does not have the expected ESP32 bootloader")
-    expected_part = resource("partition-table.bin").read_bytes()
-    if hashlib.sha256(expected_part).hexdigest() != PART_SHA256:
-        raise RuntimeError("Partition compatibility reference is damaged")
-    if part[: len(expected_part)] != expected_part:
-        raise RuntimeError("Partition layout differs from stock Chromatic v4.2; installation stopped")
+    layout(part)
     version = app_version(app_head)
-    if version not in ("0.13.4",) + tuple(f"0.13.4-korta{n}" for n in range(3, 8)):
+    if not VERSION_RE.match(version):
         raise RuntimeError(f"MCU version {version!r} is untested; installation stopped")
     return version
 
@@ -228,18 +248,97 @@ def sync_clock(port: str) -> None:
     raise RuntimeError("Clock sync was not confirmed by the Chromatic")
 
 
+def backup_layout(saved: Path) -> str:
+    with saved.open("rb") as image:
+        image.seek(PART_OFFSET)
+        return layout(image.read(0x1000))
+
+
 def install(selected: str | None) -> Path:
     app, _ = verify_package()
+    table = resource("partition-table-korta.bin")
     port = require_port(selected)
     inspect(port)
     saved = backup(port)
+    migrate = backup_layout(saved) == "stock"
     print("3/4 Installing KortaMod...", flush=True)
-    esptool_command(port, "write_flash", hex(APP_OFFSET), str(app))
+    # Clear otadata first so the bootloader runs the app written below, not an
+    # update left in the staging slot. On a stock layout these regions are
+    # unused, and the games area is cleared once so it starts empty.
+    esptool_command(port, "erase_region", hex(OTADATA[0]), hex(OTADATA[1]))
+    if migrate:
+        print("Adding space for updates and games (your settings stay)...", flush=True)
+        esptool_command(port, "erase_region", hex(GAMES[0]), hex(GAMES[1]))
+        esptool_command(port, "write_flash", hex(PART_OFFSET), str(table), hex(APP_OFFSET), str(app))
+    else:
+        esptool_command(port, "write_flash", hex(APP_OFFSET), str(app))
     print("4/4 Verifying the installation...", flush=True)
-    esptool_command(port, "verify_flash", hex(APP_OFFSET), str(app))
+    if migrate:
+        esptool_command(port, "verify_flash", hex(PART_OFFSET), str(table), hex(APP_OFFSET), str(app))
+    else:
+        esptool_command(port, "verify_flash", hex(APP_OFFSET), str(app))
     print("Syncing the clock to your computer...", flush=True)
     sync_clock(port)
     print(f"Installed. Your restore backup is {saved}", flush=True)
+    return saved
+
+
+def download(url: str) -> bytes:
+    import urllib.request
+
+    import ssl
+
+    try:
+        import certifi  # bundled with the installer: frozen apps may not find the system's CAs
+        context = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        context = ssl.create_default_context()
+    request = urllib.request.Request(url, headers={"User-Agent": "KortaMod-Installer"})
+    with urllib.request.urlopen(request, timeout=60, context=context) as response:
+        data = response.read(STOCK_FILE_MAX + 1)
+    if len(data) > STOCK_FILE_MAX:
+        raise RuntimeError("The official firmware download is larger than expected; nothing was written")
+    return data
+
+
+def stock_app(fetch=download) -> bytes:
+    """ModRetro's official v0.13.4 app, checked against pinned hashes."""
+    print("Downloading ModRetro's official firmware (v4.2, MCU 0.13.4)...", flush=True)
+    try:
+        image = fetch(STOCK_URL)
+    except OSError as error:
+        raise RuntimeError(f"Could not download the official firmware ({error}); nothing was written") from error
+    if hashlib.sha256(image).hexdigest() != STOCK_FILE_SHA256:
+        raise RuntimeError("The official firmware download did not match its known checksum; nothing was written")
+    table = resource("partition-table.bin").read_bytes()
+    if hashlib.sha256(table).hexdigest() != PART_SHA256 or image[PART_OFFSET:PART_OFFSET + len(table)] != table:
+        raise RuntimeError("The official firmware uses an unexpected layout; nothing was written")
+    app = image[APP_OFFSET:]
+    if hashlib.sha256(app).hexdigest() != STOCK_APP_SHA256 or app_version(app) != "0.13.4":
+        raise RuntimeError("The official firmware app did not match its known checksum; nothing was written")
+    return app
+
+
+def return_to_stock(selected: str | None, fetch=download) -> Path:
+    """Official ModRetro firmware and layout; settings (NVS) stay, a backup is made first."""
+    app = stock_app(fetch)
+    table = resource("partition-table.bin")
+    port = require_port(selected)
+    inspect(port)
+    saved = backup(port)
+    print("3/4 Returning to ModRetro's official firmware...", flush=True)
+    with tempfile.TemporaryDirectory(prefix="kortamod-stock-") as directory:
+        app_file = Path(directory) / "stock-app.bin"
+        app_file.write_bytes(app)
+        # The app partition is cleared whole so nothing of KortaMod remains past
+        # the official image, and KortaMod's extra areas go back to empty flash.
+        esptool_command(port, "erase_region", hex(KORTA_AREA[0]), hex(KORTA_AREA[1]))
+        esptool_command(port, "erase_region", hex(APP_OFFSET), hex(APP_BYTES))
+        esptool_command(port, "write_flash", hex(PART_OFFSET), str(table), hex(APP_OFFSET), str(app_file))
+        print("4/4 Verifying...", flush=True)
+        esptool_command(port, "verify_flash", hex(PART_OFFSET), str(table), hex(APP_OFFSET), str(app_file))
+    print("Done: your Chromatic runs ModRetro's official firmware again. ModRetro's Update Tool can now "
+          f"install newer official releases. Your backup is {saved}", flush=True)
     return saved
 
 
@@ -276,6 +375,7 @@ def main() -> int:
     mode.add_argument("--sync-clock", action="store_true", help="Sync the Chromatic clock to this computer")
     mode.add_argument("--self-test", action="store_true", help="Check bundled firmware without a device")
     mode.add_argument("--restore", type=Path, metavar="BACKUP", help="Restore your own full flash backup")
+    mode.add_argument("--stock", action="store_true", help="Return to ModRetro's official firmware (downloads it; settings stay)")
     parser.add_argument("--allow-legacy-backup", action="store_true", help="Allow an older backup without device identity metadata")
     args = parser.parse_args()
     try:
@@ -284,6 +384,8 @@ def main() -> int:
             print(f"Package verified: MCU {app_version(app.read_bytes())}")
         elif args.restore:
             restore(args.port, args.restore, args.allow_legacy_backup)
+        elif args.stock:
+            return_to_stock(args.port)
         elif args.sync_clock:
             sync_clock(require_port(args.port))
         elif args.check:

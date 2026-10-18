@@ -252,22 +252,25 @@ index 75e85b5..36b0eff 100644
 +void MenuMgr_ShowTab(TabID_t eID);
 +TabID_t MenuMgr_CurrentTab(void);
 diff --git a/components/osd/CMakeLists.txt b/components/osd/CMakeLists.txt
-index 14fdd15..9e35a8b 100644
+index 14fdd15..2ef6024 100644
 --- a/components/osd/CMakeLists.txt
 +++ b/components/osd/CMakeLists.txt
-@@ -12,6 +12,11 @@ idf_component_register(SRCS
+@@ -12,6 +12,14 @@ idf_component_register(SRCS
                          "display/screen_transit_ctl.c"
                          "osd.c"
                          "osd_default.c"
 +                        "kortamod_core.c"
++                        "kortamod_game.c"
++                        "kortamod_games.c"
 +                        "kortamod_link.c"
++                        "kortamod_ota.c"
 +                        "kortamod_port.c"
 +                        "kortamod_sfx.c"
 +                        "kortamod_web.c"
                          "status/brightness.c"
                          "status/fw.c"
                          "system/silent.c"
-@@ -24,5 +29,6 @@ idf_component_register(SRCS
+@@ -24,5 +32,6 @@ idf_component_register(SRCS
                          "palette/"
                          "display/"
                          "system/"
@@ -275,7 +278,7 @@ index 14fdd15..9e35a8b 100644
 -                    PRIV_REQUIRES esp_app_format settings console efuse)
 +                    REQUIRES battery common dlist menu_mgr button
 +                    PRIV_REQUIRES esp_app_format settings console efuse esp_wifi esp_event esp_netif lwip nvs_flash esp_timer driver
-+                                  esp_http_client esp-tls mbedtls json)
++                                  esp_http_client esp-tls mbedtls json app_update bootloader_support)
 diff --git a/components/osd/osd.c b/components/osd/osd.c
 index 0e0ebe0..7bb4a0e 100644
 --- a/components/osd/osd.c
@@ -555,19 +558,20 @@ index 1216f8a..5574b45 100644
  
          if ((EventBits & kTxFlag_RequestBGPD) == kTxFlag_RequestBGPD)
 diff --git a/main/main.c b/main/main.c
-index 8c98f78..05896ef 100644
+index 8c98f78..58a9e4c 100644
 --- a/main/main.c
 +++ b/main/main.c
-@@ -25,6 +25,8 @@
+@@ -25,6 +25,9 @@
  #include "fw.h"
  #include "osd.h"
  #include "osd_default.h"
 +#include "kortamod_port.h"
++#include "kortamod_ota.h"
 +#include "esp_memory_utils.h"
  #include "low_batt_icon_ctl.h"
  #include "style.h"
  #include "player_num.h"
-@@ -71,6 +73,10 @@ static lv_disp_t *disp;
+@@ -71,6 +74,10 @@ static lv_disp_t *disp;
  #define PIXELSPERXFER 16*ROWS_PER_XFER_X10
  #define BYTESPERXFER PIXELSPERXFER*2
  
@@ -578,7 +582,7 @@ index 8c98f78..05896ef 100644
  static void notify_lvgl_flush_ready(spi_transaction_t *pTransaction)
  {
      static int rownum = 0;
-@@ -87,14 +93,19 @@ static void notify_lvgl_flush_ready(spi_transaction_t *pTransaction)
+@@ -87,14 +94,19 @@ static void notify_lvgl_flush_ready(spi_transaction_t *pTransaction)
  
  static void example_lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map)
  {
@@ -601,7 +605,7 @@ index 8c98f78..05896ef 100644
  }
  
  static void lvglTimerTask(void* param)
-@@ -107,8 +118,6 @@ static void lvglTimerTask(void* param)
+@@ -107,8 +119,6 @@ static void lvglTimerTask(void* param)
      }
  }
  
@@ -610,7 +614,15 @@ index 8c98f78..05896ef 100644
  static void send_lines(spi_device_handle_t spi, int ypos, uint16_t *linedata)
  {
      esp_err_t ret;
-@@ -279,7 +288,7 @@ void app_main(void)
+@@ -226,6 +236,7 @@ static esp_console_dev_uart_config_t ReplHWConfig = ESP_CONSOLE_DEV_UART_CONFIG_
+ 
+ void app_main(void)
+ {
++    KortaOta_EarlyBoot();   /* before anything else: falls back if a new image keeps failing */
+     persist_storage_init();
+     Mutex_Init();
+ 
+@@ -279,7 +290,7 @@ void app_main(void)
          .spics_io_num=PIN_NUM_QSPI_CS,
          .queue_size=NUMTRANS,
          .pre_cb=NULL,
@@ -619,7 +631,7 @@ index 8c98f78..05896ef 100644
          .cs_ena_pretrans=3,
          .cs_ena_posttrans=3,
          .command_bits=11,
-@@ -300,6 +309,7 @@ void app_main(void)
+@@ -300,6 +311,7 @@ void app_main(void)
      // it's recommended to choose the size of the draw buffer(s) to be at least 1/10 screen sized
      lv_color_t *buf1 = (lv_color_t*)&buffy;
      assert(buf1);
@@ -688,18 +700,33 @@ index 439241c..feab7cc 100644
      PwrMgr_TriggerLightSleep();
  }
  
+diff --git a/partitions.csv b/partitions.csv
+new file mode 100644
+index 0000000..e810107
+--- /dev/null
++++ b/partitions.csv
+@@ -0,0 +1,9 @@
++# KortaMod flash layout. Matches stock v4.2 up to factory; adds a staging slot
++# for signed updates and storage for installed games in flash stock leaves empty.
++# Name,   Type, SubType, Offset,   Size
++nvs,      data, nvs,     0x9000,   0x6000
++phy_init, data, phy,     0xf000,   0x1000
++factory,  app,  factory, 0x10000,  0x100000
++otadata,  data, ota,     0x110000, 0x2000
++ota_0,    app,  ota_0,   0x120000, 0x100000
++games,    data, 0x40,    0x220000, 0x80000
 diff --git a/sdkconfig.defaults b/sdkconfig.defaults
-index b6612ec..a22f953 100644
+index b6612ec..7da6d67 100644
 --- a/sdkconfig.defaults
 +++ b/sdkconfig.defaults
-@@ -1,15 +1,76 @@
+@@ -1,15 +1,78 @@
 -# This file was generated using idf.py save-defconfig. It can be edited manually.
 +# This file was generated using idf.py save-defconfig or menuconfig [D] key. It can be edited manually.
  # Espressif IoT Development Framework (ESP-IDF) 5.3.0 Project Minimal Configuration
  #
  CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
 -CONFIG_APP_PROJECT_VER="0.13.4"
-+CONFIG_APP_PROJECT_VER="0.13.4-korta7"
++CONFIG_APP_PROJECT_VER="0.13.4-korta8"
  CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
  CONFIG_CHROMATIC_FW_VER_STR="4.2"
 +CONFIG_COMPILER_OPTIMIZATION_SIZE=y
@@ -773,3 +800,5 @@ index b6612ec..a22f953 100644
 +CONFIG_LV_USE_GRID=n
 +CONFIG_LV_USE_SNAPSHOT=n
 +CONFIG_LV_BUILD_EXAMPLES=n
++CONFIG_PARTITION_TABLE_CUSTOM=y
++CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

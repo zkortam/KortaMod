@@ -23,13 +23,26 @@ static const int8_t HOME_APP[2][KORTA_PAGE_SIZE] = {
     {0, 1, 2, 3, 4, 5, 9, 6, 7},
     {8, 10, 11, 12, -1, -1, -1, -1, -1}
 };
-static int home_at(int page, int slot) {
-    if (page < 0 || page > 1 || slot < 0 || slot >= KORTA_PAGE_SIZE) return -1;
-    return HOME_APP[page][slot];
+/* Installed games follow the built-in apps: the free tiles of page 2, then
+ * further pages. A game's id is GAME_ID + its index. */
+enum { GAME_ID = 100, FREE_ON_PAGE2 = 5 };
+static int home_pages(const KortaState *s) {
+    int extra = s->game_count > FREE_ON_PAGE2 ? s->game_count - FREE_ON_PAGE2 : 0;
+    return 2 + (extra + KORTA_PAGE_SIZE - 1) / KORTA_PAGE_SIZE;
+}
+static int home_at(const KortaState *s, int page, int slot) {
+    if (page < 0 || page >= home_pages(s) || slot < 0 || slot >= KORTA_PAGE_SIZE) return -1;
+    int g = -1;
+    if (page < 2) {
+        if (HOME_APP[page][slot] >= 0) return HOME_APP[page][slot];
+        if (page == 1) g = slot - (KORTA_PAGE_SIZE - FREE_ON_PAGE2);
+    } else g = FREE_ON_PAGE2 + (page - 2) * KORTA_PAGE_SIZE + slot;
+    return g >= 0 && g < s->game_count ? GAME_ID + g : -1;
 }
 static int home_app(const KortaState *s) {
-    return home_at(s->selected / KORTA_PAGE_SIZE, s->selected % KORTA_PAGE_SIZE);
+    return home_at(s, s->selected / KORTA_PAGE_SIZE, s->selected % KORTA_PAGE_SIZE);
 }
+static bool is_game(int app) { return app >= GAME_ID; }
 typedef struct { const char *name; KortaView view; } FindItem;
 /* Apps and settings under the words people search for, not only screen titles. */
 static const FindItem FIND_ITEM[] = {
@@ -674,6 +687,38 @@ static void launch_game(KortaState *s) {
     set_view(s, KORTA_HOME);
     push(s, KORTA_ACT_LAUNCH, 0);
 }
+/* Games: the port loads the game on KORTA_ACT_GAME_START and reports back with
+ * korta_arcade_status; quitting stops it and returns to its Home tile. */
+static void start_game(KortaState *s, int index) {
+    if (index < 0 || index >= s->game_count) return;
+    s->game_cur = (uint8_t)index;
+    s->arcade_phase = KORTA_ARCADE_LOADING;
+    s->arcade_paused = false;
+    s->arcade_sel = 0;
+    s->arcade_error[0] = '\0';
+    set_view(s, KORTA_ARCADE);
+    push(s, KORTA_ACT_GAME_START, (uint8_t)index);
+}
+static void quit_game(KortaState *s) {
+    push(s, KORTA_ACT_GAME_STOP, 0);
+    s->arcade_paused = false;
+    go_home(s);
+}
+/* Buttons in a game: the game reads them itself; Start opens the pause menu. */
+static void arcade_tap(KortaState *s, KortaButton b) {
+    if (s->arcade_phase == KORTA_ARCADE_ERROR) {
+        if (b == KORTA_A || b == KORTA_B) quit_game(s);
+        return;
+    }
+    if (s->arcade_phase == KORTA_ARCADE_LOADING) {
+        if (b == KORTA_B) quit_game(s);  /* never stuck behind a slow load */
+        return;
+    }
+    if (!s->arcade_paused) return;
+    if (b == KORTA_UP || b == KORTA_DOWN) s->arcade_sel ^= 1;
+    else if (b == KORTA_B || (b == KORTA_A && s->arcade_sel == 0)) s->arcade_paused = false;
+    else if (b == KORTA_A) quit_game(s);
+}
 static void open_dest(KortaState *s, KortaView next) {
     if (next == KORTA_HOME) s->via_settings = false;
     set_view(s, next);
@@ -685,6 +730,7 @@ static int list_count(const KortaState *s) {
     switch (s->view) {
         case KORTA_NOTES: return 1 + s->note_count;
         case KORTA_NOTE_OPEN: return 3;
+        case KORTA_ARCADE: return s->arcade_paused ? 2 : 0;
         case KORTA_CLEAR_CONFIRM: return 2;
         case KORTA_COUNT: return 2;
         case KORTA_TIME: return 3;
@@ -723,32 +769,32 @@ static void move_home(KortaState *s, KortaButton b) {
     int col = slot % 3;
     int row = slot / 3;
     if (b == KORTA_RIGHT) {
-        if (col < 2 && home_at(page, row * 3 + col + 1) >= 0) col++;
+        if (col < 2 && home_at(s, page, row * 3 + col + 1) >= 0) col++;
         else {
             /* Cross to the next page from any row: land on its first column, in
              * the same row or the nearest row above it that has an app. */
             int r = row;
-            while (r >= 0 && home_at(page + 1, r * 3) < 0) r--;
+            while (r >= 0 && home_at(s, page + 1, r * 3) < 0) r--;
             if (r < 0) return;
             page++;
             row = r;
             col = 0;
         }
     } else if (b == KORTA_LEFT) {
-        if (col > 0 && home_at(page, row * 3 + col - 1) >= 0) col--;
+        if (col > 0 && home_at(s, page, row * 3 + col - 1) >= 0) col--;
         else if (page > 0) {
             int r = row;
-            while (r >= 0 && home_at(page - 1, r * 3 + 2) < 0) r--;
+            while (r >= 0 && home_at(s, page - 1, r * 3 + 2) < 0) r--;
             if (r < 0) return;
             page--;
             row = r;
             col = 2;
         } else return;
     } else if (b == KORTA_DOWN) {
-        if (row < 2 && home_at(page, (row + 1) * 3 + col) >= 0) row++;
+        if (row < 2 && home_at(s, page, (row + 1) * 3 + col) >= 0) row++;
         else return;
     } else if (b == KORTA_UP) {
-        if (row > 0 && home_at(page, (row - 1) * 3 + col) >= 0) row--;
+        if (row > 0 && home_at(s, page, (row - 1) * 3 + col) >= 0) row--;
         else return;
     }
     s->selected = (uint8_t)(page * KORTA_PAGE_SIZE + row * 3 + col);
@@ -1219,6 +1265,7 @@ static int32_t conv_whole(uint8_t kind, int32_t n) {
 }
 static void on_tap(KortaState *s, KortaButton b, bool *leave) {
     (void)leave;
+    if (s->view == KORTA_ARCADE) { arcade_tap(s, b); return; }
     if (s->vol_mode == 1 && (b == KORTA_A || b == KORTA_LEFT)) {
         s->vol_mode = 2;
         s->vol_sel = 0;
@@ -1295,7 +1342,8 @@ static void on_tap(KortaState *s, KortaButton b, bool *leave) {
         int page = s->selected / KORTA_PAGE_SIZE;
         if (b == KORTA_A) {
             if (app < 0) return;
-            if (APP_VIEW[app] == KORTA_PLAY) {
+            if (is_game(app)) start_game(s, app - GAME_ID);
+            else if (APP_VIEW[app] == KORTA_PLAY) {
                 if (s->hw.cart_in) launch_game(s);
             } else {
                 s->via_settings = false;
@@ -1543,6 +1591,7 @@ static bool repeats(const KortaState *s, KortaButton b) {
 }
 static void on_repeat(KortaState *s, KortaButton b, bool *leave) {
     (void)leave;
+    if (s->view == KORTA_ARCADE) return;  /* held buttons belong to the game */
     if (s->vol_mode == 2 && (b == KORTA_LEFT || b == KORTA_RIGHT || b == KORTA_UP || b == KORTA_DOWN)) {
         on_tap(s, b, leave);
         return;
@@ -1561,6 +1610,11 @@ static void on_repeat(KortaState *s, KortaButton b, bool *leave) {
     s->repeating = false;
 }
 static void on_start_short(KortaState *s) {
+    if (s->view == KORTA_ARCADE) {
+        if (s->arcade_phase == KORTA_ARCADE_RUNNING) { s->arcade_paused = !s->arcade_paused; s->arcade_sel = 0; }
+        else quit_game(s);
+        return;
+    }
     if (s->vol_mode == 2) { s->vol_mode = 0; return; }
     if (s->view == KORTA_KEYBOARD) {
         if (s->typing_pass) finish_pass(s);
@@ -1576,16 +1630,19 @@ static void on_start_short(KortaState *s) {
     }
 }
 static void on_start_hold(KortaState *s) {
+    if (s->view == KORTA_ARCADE) return;
     if (s->vol_mode == 2) return;
     if (s->view == KORTA_KEYBOARD || is_alert(s->view)) return;
     open_find(s, s->view);
 }
 static void on_select_short(KortaState *s) {
+    if (s->view == KORTA_ARCADE) return;
     if (s->vol_mode == 2) return;
     if (is_alert(s->view)) return;
     open_find(s, s->view);
 }
 static void on_select_hold(KortaState *s) {
+    if (s->view == KORTA_ARCADE) return;
     if (s->vol_mode == 2) return;
     if (s->view == KORTA_KEYBOARD) return;
     s->night = !s->night;
@@ -1705,10 +1762,11 @@ static void status_bar(Painter *d, const KortaState *s, const char *title) {
     }
     if (s->view == KORTA_HOME) {
         int page = s->selected / KORTA_PAGE_SIZE;
-        int dots_x = 76;
-        for (int i = 0; i < 2; i++) {
+        int pages = home_pages(s);
+        int dots_x = 80 - (pages * 7 - 3) / 2;
+        for (int i = 0; i < pages; i++) {
             uint16_t c = i == page ? d->p.band_ink : d->p.muted;
-            fill(d, dots_x + i * 7, 9, 4, 2, c);
+            fill(d, dots_x + i * 7, 5, 4, 2, c);  /* centred in the 12 px band */
         }
     }
 }
@@ -1839,7 +1897,7 @@ static void paint_home(Painter *d, const KortaState *s) {
     int page = s->selected / KORTA_PAGE_SIZE;
     int cur = home_app(s);
     for (int i = 0; i < KORTA_PAGE_SIZE; i++) {
-        int app = home_at(page, i);
+        int app = home_at(s, page, i);
         if (app < 0) continue;
         int col = i % 3;
         int row = i / 3;
@@ -1848,6 +1906,12 @@ static void paint_home(Painter *d, const KortaState *s) {
         if (app == cur) {
             fill(d, x, y, 50, 41, d->p.card);
             border(d, x, y, 50, 41, d->p.ink, 2);
+        }
+        if (is_game(app)) {
+            /* Installed games: the cartridge icon, each in its own colour. */
+            blit_app(d, 9, x + 13, y + 2, app_color((app - GAME_ID + 3) % KORTA_APP_COUNT));
+            centered_label(d, s->game_names[app - GAME_ID], x + 25, y + 29, d->p.ink);
+            continue;
         }
         bool cart = APP_VIEW[app] == KORTA_PLAY;
         bool grey = cart && !s->hw.cart_in;
@@ -2549,6 +2613,56 @@ static void paint_clear(Painter *d, const KortaState *s) {
     row_at(d, "CANCEL", NULL, 52, s->focus == 0);
     row_at(d, "DELETE", NULL, 70, s->focus == 1);
 }
+static void paint_update(Painter *d, const KortaState *s) {
+    fill(d, 0, 0, 160, 144, d->p.bg);
+    static const char *const words[] = {"", "UPDATING", "CHECKING", "RESTARTING", "FINISHING"};
+    const char *w = words[s->update_phase < 5 ? s->update_phase : 0];
+    centered(d, w, 80, 52, d->p.ink);
+    bool bar = s->update_phase == KORTA_UPDATE_DOWNLOAD || s->update_phase == KORTA_UPDATE_FINISH;
+    if (bar) {
+        int pct = s->update_percent > 100 ? 100 : s->update_percent;
+        fill(d, 30, 68, 100, 4, d->p.line);
+        fill(d, 30, 68, pct, 4, d->p.accent);
+        char num[8];
+        snprintf(num, sizeof num, "%d%%", pct);
+        centered(d, num, 80, 78, d->p.muted);
+    }
+    centered(d, "DON'T TURN OFF", 80, 120, d->p.muted);
+}
+/* While a game runs the port has already drawn it; only overlays are painted. */
+static void paint_arcade(Painter *d, const KortaState *s) {
+    const char *name = s->game_names[s->game_cur % KORTA_GAME_MAX];
+    if (s->arcade_phase == KORTA_ARCADE_LOADING) {
+        fill(d, 0, 0, 160, 144, d->p.bg);
+        blit_app(d, 9, 68, 44, app_color((s->game_cur + 3) % KORTA_APP_COUNT));
+        centered(d, name, 80, 76, d->p.ink);
+        centered(d, "LOADING", 80, 90, d->p.muted);
+        centered(d, "B CANCEL", 80, 132, d->p.muted);
+        return;
+    }
+    if (s->arcade_phase == KORTA_ARCADE_ERROR) {
+        fill(d, 0, 0, 160, 144, d->p.bg);
+        centered(d, name, 80, 12, d->p.ink);
+        centered(d, "GAME STOPPED", 80, 26, d->p.accent);
+        int len = (int)strlen(s->arcade_error);
+        int starts[9], counts[9];
+        int lines = wrap_lines(s->arcade_error, len, 8, starts, counts);
+        char line[24];
+        for (int i = 0; i < lines; i++) {
+            memcpy(line, s->arcade_error + starts[i], (size_t)counts[i]);
+            line[counts[i]] = '\0';
+            draw_text(d, line, 11, 44 + i * 10, d->p.ink);
+        }
+        centered(d, "A BACK", 80, 132, d->p.muted);
+        return;
+    }
+    if (!s->arcade_paused) return;
+    fill(d, 24, 40, 112, 64, d->p.bg);
+    border(d, 24, 40, 112, 64, d->p.ink, 1);
+    centered(d, name, 80, 47, d->p.muted);
+    row_at(d, "RESUME", NULL, 62, s->arcade_sel == 0);
+    row_at(d, "QUIT", NULL, 80, s->arcade_sel == 1);
+}
 static void paint_ring(Painter *d, const KortaState *s, const char *title) {
     bool flash = ((s->now_ms / 400u) & 1u) != 0;
     fill(d, 0, 0, 160, 144, flash ? d->p.accent : d->p.ink);
@@ -2671,6 +2785,37 @@ void korta_hidden(KortaState *s) {
     if (s->view == KORTA_ALARM_RING) { s->alarm_latched = true; s->alarm_latch_min = (uint16_t)(s->hour * 60 + s->min); }
     if (is_alert(s->view)) return_to(s, s->ring_from);
     if (s->view == KORTA_FLASH) go_home(s);
+    if (s->view == KORTA_ARCADE && s->arcade_phase == KORTA_ARCADE_RUNNING) { s->arcade_paused = true; s->arcade_sel = 0; }
+}
+void korta_set_games(KortaState *s, const char *const *names, int count) {
+    if (!s) return;
+    if (count < 0) count = 0;
+    if (count > KORTA_GAME_MAX) count = KORTA_GAME_MAX;
+    memset(s->game_names, 0, sizeof s->game_names);
+    for (int i = 0; i < count; i++) {
+        if (names && names[i]) korta_clean_text(s->game_names[i], sizeof s->game_names[i], names[i]);
+        if (!s->game_names[i][0]) snprintf(s->game_names[i], sizeof s->game_names[i], "GAME %d", i + 1);
+    }
+    s->game_count = (uint8_t)count;
+    /* The list changed under a running game: stop it. */
+    if (s->view == KORTA_ARCADE && s->game_cur >= count) quit_game(s);
+    /* Keep the Home cursor on a real tile. */
+    if (home_app(s) < 0) s->selected = 0;
+}
+void korta_set_update(KortaState *s, int phase, int percent) {
+    if (!s) return;
+    s->update_phase = (uint8_t)(phase >= KORTA_UPDATE_DOWNLOAD && phase <= KORTA_UPDATE_FINISH ? phase : KORTA_UPDATE_NONE);
+    s->update_percent = (uint8_t)(percent < 0 ? 0 : percent > 100 ? 100 : percent);
+}
+void korta_open_game(KortaState *s, int index) {
+    if (!s || index < 0 || index >= s->game_count || s->view == KORTA_ARCADE || is_alert(s->view)) return;
+    start_game(s, index);
+}
+void korta_arcade_status(KortaState *s, int phase, const char *error) {
+    if (!s || s->view != KORTA_ARCADE) return;
+    s->arcade_phase = (uint8_t)(phase == KORTA_ARCADE_RUNNING ? KORTA_ARCADE_RUNNING : KORTA_ARCADE_ERROR);
+    s->arcade_paused = false;
+    snprintf(s->arcade_error, sizeof s->arcade_error, "%s", error ? error : "");
 }
 int korta_clean_text(char *dst, int size, const char *src) {
     /* Latin-1 letters (UTF-8 C3 80..BF) folded to their base letters. */
@@ -2877,6 +3022,7 @@ uint8_t korta_take_sfx(KortaState *s) {
 static void infer_sfx(KortaState *s, KortaButton b, KortaView v0, uint8_t f0, uint8_t sel0,
     uint8_t kr0, uint8_t kc0, uint8_t sil0, uint8_t night0, uint8_t vm0, uint8_t rev0, bool held) {
     if (s->sfx == KORTA_SFX_ALERT || s->sfx == KORTA_SFX_DICE || s->sfx == KORTA_SFX_COIN) return;
+    if (s->view == KORTA_ARCADE && v0 == KORTA_ARCADE && !s->arcade_paused) return;  /* the game's own input */
     if (is_alert(s->view)) {
         if (s->view != v0) s->sfx = KORTA_SFX_ALERT;
         return;
@@ -2897,7 +3043,8 @@ static void infer_sfx(KortaState *s, KortaButton b, KortaView v0, uint8_t f0, ui
     }
     if (held) return;  /* a repeat that changed nothing stays quiet */
     if (b == KORTA_A || b == KORTA_B) {
-        bool play = (s->view == KORTA_HOME && home_app(s) >= 0 && APP_VIEW[home_app(s)] == KORTA_PLAY) || s->view == KORTA_PLAY;
+        int app = s->view == KORTA_HOME ? home_app(s) : -1;
+        bool play = (app >= 0 && !is_game(app) && APP_VIEW[app] == KORTA_PLAY) || s->view == KORTA_PLAY;
         if (play) s->sfx = s->hw.cart_in ? KORTA_SFX_OPEN : KORTA_SFX_DENY;
         else if (b == KORTA_A) s->sfx = KORTA_SFX_OK;
         else s->sfx = KORTA_SFX_BACK;
@@ -2909,6 +3056,7 @@ bool korta_frame(KortaState *s, uint16_t held, uint32_t time_ms) {
     if (!s) return false;
     bool leave = false;
     korta_service(s, time_ms);
+    if (s->update_phase) { s->primed = false; return false; }  /* inputs wait until the update ends */
     if (!s->primed) {
         s->primed = true;
         s->held = held;
@@ -3023,6 +3171,8 @@ void korta_render(const KortaState *s, uint16_t *pixels) {
     if (s->view == KORTA_TIMER_RING) { paint_ring(&d, s, "TIMER"); paint_vol(&d, s); return; }
     if (s->view == KORTA_MESSAGE) { paint_message(&d, s); paint_vol(&d, s); return; }
     if (s->view == KORTA_FLASH) { paint_flash(&d, s); paint_vol(&d, s); return; }
+    if (s->update_phase) { paint_update(&d, s); return; }
+    if (s->view == KORTA_ARCADE) { paint_arcade(&d, s); paint_vol(&d, s); return; }
     fill(&d, 0, 0, 160, 144, d.p.bg);
     char note_title[24];
     const char *title = s->view == KORTA_HOME ? NULL : view_title(s);

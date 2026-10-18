@@ -1,17 +1,17 @@
 # Phone link (companion site)
 
-Anyone running KortaMod can manage their Chromatic from **https://kortamod.vercel.app** on any phone or computer: notes (typed with a real keyboard), alarm, clock, battery and versions. No app install and no account. The phone and the Chromatic do not need to share a network; the Chromatic only needs Wi-Fi with internet.
+Anyone running KortaMod can manage their Chromatic from **https://kortamod.app** on any phone or computer: notes (typed with a real keyboard), alarm, clock, battery and versions. No app install and no account. The phone and the Chromatic do not need to share a network; the Chromatic only needs Wi-Fi with internet.
 
 ## Using it
 
 1. On the Chromatic: **Home → Phone**, switch **Phone link** on. This also turns Wi-Fi on; pick a network in Settings → Wi-Fi if none is saved.
-2. When it shows **kortamod.vercel.app** and a 6-digit code, open the site and enter the code.
+2. When it shows **kortamod.app** and a 6-digit code, open the site and enter the code.
 3. The browser stays paired until it is unpaired, or **Forget phones** on the Chromatic revokes every browser.
 
 ## How it works
 
 ```
-phone/laptop browser ──HTTPS──> kortamod.vercel.app (Vercel functions) <──HTTPS── Chromatic
+phone/laptop browser ──HTTPS──> kortamod.app (Vercel functions) <──HTTPS── Chromatic
                                       │
                                 Upstash Redis (state, codes, tokens, command queue)
 ```
@@ -20,6 +20,13 @@ phone/laptop browser ──HTTPS──> kortamod.vercel.app (Vercel functions) <
 - **Site** (`cloud/`): static page plus eleven functions. A browser write queues a command and waits for the result: up to 9 s if the device is checking in fast, else up to 29 s (the page shows a pulsing dot meanwhile, "Waking your Chromatic"). Results: 200, 409 (notes changed on the device), 423 (busy: a note open in the keyboard, a running timer, an alarm ringing), 400, 503 (device offline), 504 (no answer). Each command carries a deadline in server time; past it the device refuses it, so nothing is applied after the browser was told it failed.
 - **Storage cost:** one Redis hash per device (`km:d:{id}`) holds its secret, state, code and flags. A routine check-in is 2 database commands (HGETALL, HSET); the queue is read only when a browser has flagged a command. An idle paired Chromatic uses about 260,000 commands a month, a lonely one about 45,000, and an open page about 5,000 an hour (device every 2 s, page every 4 s; hidden tabs stop). The Upstash free tier is 500,000; beyond it, pay-as-you-go is $0.20 per 100,000. `cloud/test/relay.test.js` asserts these budgets.
 - **Text** is cleaned to what the 5x7 font shows (smart quotes, dashes, Latin-1 accents mapped; other characters become `?`), the same function in the page and on the device.
+
+## Games
+
+The Games tab writes games with ChatGPT, previews them in the browser with the
+device's own engine (WebAssembly), and installs them on the Chromatic. The device
+downloads the source itself from `/api/device/game` with its own credentials;
+only the device a game was sent to can fetch it. See [games.md](games.md).
 
 ## Security model
 

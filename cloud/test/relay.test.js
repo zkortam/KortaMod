@@ -6,13 +6,11 @@ import { POST as sync } from "../api/device/sync.js";
 import { POST as pair } from "../api/pair.js";
 import { POST as unpair } from "../api/unpair.js";
 import { GET as getState } from "../api/state.js";
-import { PUT as putNotes } from "../api/notes.js";
-import { PUT as putAlarm } from "../api/alarm.js";
-import { PUT as putClock } from "../api/clock.js";
-import { PUT as putSetting } from "../api/settings.js";
-import { POST as postMessage } from "../api/message.js";
-import { POST as postTimer } from "../api/timer.js";
-import { POST as postWifi } from "../api/wifi.js";
+import {
+  notes as putNotes, alarm as putAlarm, clock as putClock, settings as putSetting,
+  message as postMessage, timer as postTimer, wifi as postWifi,
+} from "../api/_commands.js";
+import { PUT as routePut, POST as routePost } from "../api/command.js";
 import { GET as getPush, POST as postPush, DELETE as deletePush } from "../api/push.js";
 import { setSender, events } from "../api/_push.js";
 
@@ -360,4 +358,15 @@ test("notification events ignore what didn't change", () => {
   assert.deepEqual(events(null, null), []);
   assert.deepEqual(events({ device: { battery: 10, charging: true } }, { device: { battery: 10, charging: false } }).map(e => e.tag), ["battery"]);
   assert.deepEqual(events({ device: { battery: 10 } }, { device: { battery: 9 } }), []);
+});
+
+test("command URLs route to their handlers and check the method", async () => {
+  const dev = chromatic();
+  const token = await pairBrowser(dev);
+  const call = (h, method, path, body) => h(new Request("http://x" + path, {
+    method, headers: { "content-type": "application/json", authorization: "Bearer " + token }, body: JSON.stringify(body) }));
+  assert.equal((await call(routePut, "PUT", "/api/alarm", { index: 0, on: true, hour: 25, minute: 0 })).status, 400, "reached the alarm validator");
+  assert.equal((await call(routePost, "POST", "/api/alarm", { index: 0 })).status, 405);
+  assert.equal((await call(routePost, "POST", "/api/nope", {})).status, 404);
+  assert.equal((await call(routePost, "POST", "/api/command?kind=timer", { action: "explode" })).status, 400, "rewritten form");
 });

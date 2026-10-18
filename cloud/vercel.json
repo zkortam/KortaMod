@@ -1,5 +1,9 @@
 {
-  "functions": { "api/**/*.js": { "maxDuration": 45 } },
+  "functions": { "api/**/*.js": { "maxDuration": 300 } },
+  "rewrites": [
+    { "source": "/install", "destination": "/install.html" },
+    { "source": "/api/:kind(notes|alarm|clock|settings|message|timer|wifi)", "destination": "/api/command?kind=:kind" }
+  ],
   "headers": [
     {
       "source": "/(.*)",
@@ -7,7 +11,7 @@
         { "key": "X-Content-Type-Options", "value": "nosniff" },
         { "key": "X-Frame-Options", "value": "DENY" },
         { "key": "Referrer-Policy", "value": "no-referrer" },
-        { "key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" }
+        { "key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://api.openai.com; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" }
       ]
     }
   ]

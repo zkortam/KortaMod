@@ -8,12 +8,13 @@ executable = 'KortaMod-Installer.exe' if platform == 'Windows' else 'KortaMod-In
 launcher = {'Windows': 'Install.bat', 'macOS-AppleSilicon': 'Install.command', 'macOS-Intel': 'Install.command', 'Linux': 'Install.sh'}[platform]
 restore = {'Windows': 'Restore.bat', 'macOS-AppleSilicon': 'Restore.command', 'macOS-Intel': 'Restore.command', 'Linux': 'Restore.sh'}[platform]
 clock = {'Windows': 'SyncClock.bat', 'macOS-AppleSilicon': 'SyncClock.command', 'macOS-Intel': 'SyncClock.command', 'Linux': 'SyncClock.sh'}[platform]
+stock = {'Windows': 'ReturnToStock.bat', 'macOS-AppleSilicon': 'ReturnToStock.command', 'macOS-Intel': 'ReturnToStock.command', 'Linux': 'ReturnToStock.sh'}[platform]
 archive = Path('dist') / f'KortaMod-{platform}.zip'
 with ZipFile(archive, 'w', ZIP_DEFLATED) as output:
-    for path in (Path('dist') / executable, Path(launcher), Path(restore), Path(clock), Path('README.md'), Path('LICENSE')):
+    for path in (Path('dist') / executable, Path(launcher), Path(restore), Path(clock), Path(stock), Path('README.md'), Path('LICENSE')):
         info = ZipInfo(path.name)
         info.compress_type = ZIP_DEFLATED
         info.create_system = 3
-        info.external_attr = ((0o755 if path.name in (executable, launcher, restore, clock) else 0o644) << 16)
+        info.external_attr = ((0o755 if path.name in (executable, launcher, restore, clock, stock) else 0o644) << 16)
         output.writestr(info, path.read_bytes())
 print(archive)

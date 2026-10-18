@@ -1,14 +1,17 @@
 #include "kortamod_web.h"
+#include "kortamod_games.h"
 
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
+#include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,7 +20,7 @@
 /* The companion site. The device keeps one HTTPS connection to it while the
  * phone link is on: it reports its state and pairing code, and collects what
  * paired browsers asked for. Nothing listens on the device itself. */
-#define CLOUD_HOST "kortamod.vercel.app"
+#define CLOUD_HOST "kortamod.app"
 #define CLOUD_SYNC_URL "https://" CLOUD_HOST "/api/device/sync"
 
 enum {
@@ -92,8 +95,8 @@ static void load_identity(void) {
 }
 
 /* Hands the parsed command in `cmd` to the UI task and waits for its result. The
- * UI task copies `cmd` when it takes it, so only state 1 (posted) owns the buffer;
- * the cloud task fills it while it is idle or already taken. */
+ * UI task works on `cmd` in place while it holds it (state 1 posted, 2 taken);
+ * the cloud task only fills it at state 0 (see wait_for_cmd). */
 static int apply_command(void) {
     xSemaphoreTake(cmd_done, 0);
     xSemaphoreTake(lock, portMAX_DELAY);
@@ -187,6 +190,21 @@ static bool parse_command(const cJSON *c, KortaWebCmd *out) {
         snprintf(out->password, sizeof out->password, "%s", pass ? pass->valuestring : "");
         return true;
     }
+    if (strcmp(kind->valuestring, "update") == 0) {
+        const cJSON *url = cJSON_GetObjectItem(c, "url"), *size = cJSON_GetObjectItem(c, "size");
+        const cJSON *sha = cJSON_GetObjectItem(c, "sha256"), *sig = cJSON_GetObjectItem(c, "signature");
+        if (!cJSON_IsString(url) || !cJSON_IsNumber(size) || !cJSON_IsString(sha) || !cJSON_IsString(sig)
+            || strlen(url->valuestring) >= sizeof out->url || strncmp(url->valuestring, "https://", 8) != 0
+            || strlen(sha->valuestring) != 64 || strlen(sig->valuestring) >= sizeof out->signature
+            || size->valuedouble <= 0 || size->valuedouble > 0x100000)
+            return false;
+        out->kind = KORTA_WEB_CMD_UPDATE;
+        snprintf(out->url, sizeof out->url, "%s", url->valuestring);
+        snprintf(out->sha256, sizeof out->sha256, "%s", sha->valuestring);
+        snprintf(out->signature, sizeof out->signature, "%s", sig->valuestring);
+        out->size = (uint32_t)size->valuedouble;
+        return true;
+    }
     if (strcmp(kind->valuestring, "clock") == 0) {
         const cJSON *epoch = cJSON_GetObjectItem(c, "epoch"), *zone = cJSON_GetObjectItem(c, "zone_minutes");
         if (!cJSON_IsNumber(epoch) || !cJSON_IsNumber(zone)) return false;
@@ -243,6 +261,23 @@ static char *build_sync(const Result *results, int count, bool forget) {
         cJSON_AddStringToObject(device, "mcu", view.mcu);
         cJSON_AddStringToObject(device, "fpga", view.fpga);
         cJSON_AddStringToObject(device, "chromatic", view.chromatic);
+        cJSON_AddBoolToObject(device, "ota", view.ota_available);
+        cJSON_AddBoolToObject(device, "games", view.games_ready);
+        if (view.ota_phase) {
+            static const char *const phases[] = {"idle", "download", "verify", "restart", "finish", "failed"};
+            cJSON *u = cJSON_AddObjectToObject(state, "update");
+            cJSON_AddStringToObject(u, "phase", phases[view.ota_phase < 6 ? view.ota_phase : 0]);
+            cJSON_AddNumberToObject(u, "percent", view.ota_percent);
+            if (view.ota_error[0]) cJSON_AddStringToObject(u, "error", view.ota_error);
+        }
+        cJSON *games = cJSON_AddArrayToObject(state, "games");
+        for (int i = 0; i < view.game_count && i < KORTA_GAME_MAX; i++) {
+            cJSON *gm = cJSON_CreateObject();
+            cJSON_AddNumberToObject(gm, "slot", view.games[i].slot);
+            cJSON_AddStringToObject(gm, "name", view.games[i].name);
+            cJSON_AddNumberToObject(gm, "size", view.games[i].size);
+            cJSON_AddItemToArray(games, gm);
+        }
         if (view.battery_known) cJSON_AddNumberToObject(device, "battery", view.battery_pct);
         cJSON_AddBoolToObject(device, "charging", view.charging);
         cJSON *set = cJSON_AddObjectToObject(state, "settings");
@@ -336,6 +371,106 @@ static esp_http_client_handle_t open_client(void) {
     return client;
 }
 
+/* The last game install problem, for `korta game` on the console. */
+static char game_diag[96];
+static void diag(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(game_diag, sizeof game_diag, fmt, ap);
+    va_end(ap);
+}
+const char *KortaWeb_GameDiag(void) { return game_diag; }
+/* The UI task may still hold `cmd` after a timeout: wait until it lets go. */
+static bool wait_for_cmd(void) {
+    for (int i = 0; i < 500; i++) {
+        xSemaphoreTake(lock, portMAX_DELAY);
+        bool free_now = cmd_state == 0;
+        xSemaphoreGive(lock);
+        if (free_now) return true;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    return false;
+}
+static int hexval(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1; }
+static bool parse_hex(const char *s, uint8_t *out, int bytes) {
+    if (!s || (int)strlen(s) != bytes * 2) return false;
+    for (int i = 0; i < bytes; i++) {
+        int hi = hexval(s[2 * i]), lo = hexval(s[2 * i + 1]);
+        if (hi < 0 || lo < 0) return false;
+        out[i] = (uint8_t)(hi << 4 | lo);
+    }
+    return true;
+}
+/* Fetches a game's source over the sync connection (the same host, so the
+ * keep-alive session is reused) straight into flash. */
+static int download_game(esp_http_client_handle_t client, const char *gid, uint32_t size, const uint8_t sha[32], const char *name) {
+    int r = KortaGames_Begin(size);
+    if (r) { diag("begin %d (size %lu)", r, (unsigned long)size); return r; }
+    char url[96];
+    snprintf(url, sizeof url, "https://" CLOUD_HOST "/api/device/game?gid=%s", gid);
+    esp_http_client_set_url(client, url);
+    esp_http_client_set_method(client, HTTP_METHOD_GET);
+    bool ok = false;
+    esp_err_t opened = esp_http_client_open(client, 0);
+    int status = 0;
+    int64_t length = -2;
+    uint32_t got = 0;
+    if (opened == ESP_OK) {
+        length = esp_http_client_fetch_headers(client);
+        status = esp_http_client_get_status_code(client);
+        /* Function responses arrive chunked (no length): the SHA-256 check covers the content. */
+        if (status == 200 && (length <= 0 || length == (int64_t)size)) {
+            char buf[512];
+            int n;
+            while (got < size && (n = esp_http_client_read(client, buf, sizeof buf)) > 0) {
+                if (got + (uint32_t)n > size || KortaGames_Write(buf, (size_t)n)) break;
+                got += (uint32_t)n;
+            }
+            ok = got == size;
+        }
+        if (!ok || !esp_http_client_is_complete_data_received(client)) esp_http_client_close(client);
+    }
+    esp_http_client_set_url(client, CLOUD_SYNC_URL);
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    if (!ok) {
+        diag("download open %d status %d length %ld got %lu of %lu", (int)opened, status, (long)length, (unsigned long)got, (unsigned long)size);
+        KortaGames_Abort();
+        return KORTA_GAMES_INVALID;
+    }
+    r = KortaGames_Finish(name, sha);
+    if (r) diag("finish %d", r);
+    return r;
+}
+/* Game installs and deletes run here, in the phone link's task; the UI task
+ * then reloads the list. 0 ok, 2 busy, 3 invalid, 5 no storage. */
+static int game_command(esp_http_client_handle_t client, const cJSON *c) {
+    const cJSON *op = cJSON_GetObjectItem(c, "op");
+    if (!cJSON_IsString(op)) return KORTA_WEB_INVALID;
+    if (!KortaGames_Available()) return KORTA_GAMES_NO_STORAGE;
+    int r;
+    if (strcmp(op->valuestring, "install") == 0) {
+        const cJSON *gid = cJSON_GetObjectItem(c, "gid"), *name = cJSON_GetObjectItem(c, "name");
+        const cJSON *size = cJSON_GetObjectItem(c, "size"), *sha = cJSON_GetObjectItem(c, "sha256");
+        uint8_t digest[32], id[8];
+        if (!cJSON_IsString(gid) || !parse_hex(gid->valuestring, id, 8) || !cJSON_IsString(name)
+            || !cJSON_IsNumber(size) || size->valuedouble < 1 || size->valuedouble > KORTA_GAMES_SOURCE_MAX
+            || !cJSON_IsString(sha) || !parse_hex(sha->valuestring, digest, 32)) return KORTA_WEB_INVALID;
+        char clean[KORTA_GAME_NAME + 1];
+        korta_clean_text(clean, sizeof clean, name->valuestring);
+        r = download_game(client, gid->valuestring, (uint32_t)size->valuedouble, digest, clean);
+    } else if (strcmp(op->valuestring, "delete") == 0) {
+        const cJSON *slot = cJSON_GetObjectItem(c, "slot");
+        if (!cJSON_IsNumber(slot)) return KORTA_WEB_INVALID;
+        r = KortaGames_Delete(slot->valueint);
+    } else return KORTA_WEB_INVALID;
+    if (r == KORTA_GAMES_OK) {
+        memset(&cmd, 0, sizeof cmd);
+        cmd.kind = KORTA_WEB_CMD_GAMES;
+        r = apply_command();
+    }
+    return r;
+}
+
 static void cloud_task(void *arg) {
     (void)arg;
     esp_http_client_handle_t client = NULL;
@@ -398,7 +533,10 @@ static void cloud_task(void *arg) {
             const cJSON *exp = cJSON_GetObjectItem(c, "exp");
             bool late = cJSON_IsNumber(now) && (cJSON_IsNumber(exp) ? now->valuedouble > exp->valuedouble
                 : cJSON_IsNumber(t) && now->valuedouble - t->valuedouble > CMD_MAX_AGE_MS);
+            const cJSON *kind = cJSON_GetObjectItem(c, "kind");
             if (late) r->result = 4;
+            else if (!wait_for_cmd()) r->result = KORTA_WEB_BUSY;
+            else if (cJSON_IsString(kind) && strcmp(kind->valuestring, "game") == 0) r->result = game_command(client, c);
             else if (!parse_command(c, &cmd)) r->result = KORTA_WEB_INVALID;
             else {
                 r->result = apply_command();
@@ -448,25 +586,29 @@ void KortaWeb_Service(bool on, bool network, bool screen) {
     if (changed && task) xTaskNotifyGive(task);
 }
 
-void KortaWeb_Publish(const KortaWebView *v) {
-    if (!lock || !v) return;
+static uint8_t alert_before;
+KortaWebView *KortaWeb_ViewBegin(void) {
+    if (!lock) return NULL;
     xSemaphoreTake(lock, portMAX_DELAY);
+    alert_before = view.alert;
+    return &view;
+}
+void KortaWeb_ViewEnd(void) {
+    if (!lock) return;
     /* A ring is reported at once, so phones are notified while it rings. */
-    bool ring = v->alert && v->alert != view.alert;
-    view = *v;
+    bool ring = view.alert && view.alert != alert_before;
     view_ready = true;
     xSemaphoreGive(lock);
     if (ring && task) xTaskNotifyGive(task);
 }
 
-bool KortaWeb_TakeCommand(KortaWebCmd *out) {
-    if (!lock || !out) return false;
-    bool got = false;
+KortaWebCmd *KortaWeb_TakeCommand(void) {
+    if (!lock) return NULL;
+    KortaWebCmd *got = NULL;
     xSemaphoreTake(lock, portMAX_DELAY);
     if (cmd_state == 1) {
-        *out = cmd;
         cmd_state = 2;
-        got = true;
+        got = &cmd;
     }
     xSemaphoreGive(lock);
     return got;

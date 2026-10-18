@@ -1,13 +1,13 @@
 """End-to-end: a real Chromatic, the deployed site, and this script as the browser.
 
 Opens the USB console (which resets the ESP32), turns the phone link on, reads
-the pairing code, then uses https://kortamod.vercel.app exactly as a phone does.
+the pairing code, then uses https://kortamod.app exactly as a phone does.
 The device's notes and alarm are saved first and restored at the end; the phone
 link is left on. Browsers you paired yourself are never revoked unless you pass
 --include-forget (which tests Forget phones and so unpairs everything). Opening
 the console restarts the Chromatic, so paired pages show it offline briefly.
 
-    python3 device_e2e.py /dev/cu.usbmodem0123456783 [https://kortamod.vercel.app]
+    python3 device_e2e.py /dev/cu.usbmodem0123456783 [https://kortamod.app]
 """
 import json
 import re
@@ -20,7 +20,7 @@ import serial  # pyserial, from the ESP-IDF python env
 
 ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
 PORT = ARGS[0] if ARGS else "/dev/cu.usbmodem0123456783"
-SITE = ARGS[1] if len(ARGS) > 1 else "https://kortamod.vercel.app"
+SITE = ARGS[1] if len(ARGS) > 1 else "https://kortamod.app"
 failures = []
 
 

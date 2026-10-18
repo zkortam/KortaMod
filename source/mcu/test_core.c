@@ -1636,6 +1636,87 @@ static void flash_and_tools(void) {
     render_guarded(&s);
 }
 
+static void games_on_home(void) {
+    KortaState s;
+    korta_init(&s);
+    KortaAction a;
+    /* Page 2 has five free tiles; games fill them, then new pages. */
+    const char *names[7] = {"SNAKE", "Pong \xE2\x80\x94 2P", "", "D", "E", "F", "G"};
+    korta_set_games(&s, names, 7);
+    CHECK(s.game_count == 7 && strcmp(s.game_names[1], "Pong - 2P") == 0 && strcmp(s.game_names[2], "GAME 3") == 0);
+    render_guarded(&s);
+    for (int i = 0; i < 3; i++) press(&s, KORTA_RIGHT);
+    CHECK(s.selected / KORTA_PAGE_SIZE == 1);
+    for (int i = 0; i < 10; i++) press(&s, KORTA_RIGHT);
+    CHECK(s.selected / KORTA_PAGE_SIZE == 2);  /* the games page */
+    render_guarded(&s);
+    press(&s, KORTA_A);
+    CHECK(s.view == KORTA_ARCADE && s.arcade_phase == KORTA_ARCADE_LOADING);
+    CHECK(korta_take_action(&s, &a) && a.kind == KORTA_ACT_GAME_START && a.value == s.game_cur);
+    CHECK(s.game_cur >= 5);
+    drain(&s);
+    render_guarded(&s);
+    /* Loaded: buttons belong to the game, no UI sounds or navigation. */
+    korta_arcade_status(&s, KORTA_ARCADE_RUNNING, NULL);
+    korta_take_sfx(&s);  /* the launch sound */
+    press(&s, KORTA_B);
+    press(&s, KORTA_SELECT);
+    korta_frame(&s, 0, s.now_ms + 100);
+    korta_frame(&s, 1u << KORTA_B, s.now_ms + 30);
+    korta_frame(&s, 1u << KORTA_B, s.now_ms + 1500);   /* holding B would go Home elsewhere */
+    korta_frame(&s, 0, s.now_ms + 30);
+    CHECK(s.view == KORTA_ARCADE && !s.arcade_paused && s.sfx == 0);
+    /* Start pauses; B resumes; Start again, Down, A quits to the game's tile. */
+    press(&s, KORTA_START);
+    CHECK(s.arcade_paused);
+    render_guarded(&s);
+    press(&s, KORTA_B);
+    CHECK(!s.arcade_paused);
+    press(&s, KORTA_START);
+    press(&s, KORTA_DOWN);
+    drain(&s);
+    press(&s, KORTA_A);
+    CHECK(s.view == KORTA_HOME && korta_take_action(&s, &a) && a.kind == KORTA_ACT_GAME_STOP);
+    CHECK(s.selected / KORTA_PAGE_SIZE == 2);
+    /* Closing the menu pauses a running game. */
+    press(&s, KORTA_A);
+    drain(&s);
+    korta_arcade_status(&s, KORTA_ARCADE_RUNNING, NULL);
+    korta_hidden(&s);
+    CHECK(s.view == KORTA_ARCADE && s.arcade_paused);
+    /* An error stops the game; A goes back. */
+    press(&s, KORTA_A);    /* resume */
+    korta_arcade_status(&s, KORTA_ARCADE_ERROR, "line 3: score is not defined");
+    render_guarded(&s);
+    press(&s, KORTA_A);
+    CHECK(s.view == KORTA_HOME);
+    drain(&s);
+    /* An alarm rings over a game and returns to it. */
+    press(&s, KORTA_A);
+    korta_arcade_status(&s, KORTA_ARCADE_RUNNING, NULL);
+    drain(&s);
+    s.time_known = true; s.alarms[0].on = true; s.hour = s.alarms[0].hour; s.min = s.alarms[0].minute;
+    korta_frame(&s, 0, s.now_ms + 50);
+    CHECK(s.view == KORTA_ALARM_RING);
+    press(&s, KORTA_A);
+    CHECK(s.view == KORTA_ARCADE);
+    drain(&s);
+    /* Removing the running game from the list stops it; the cursor stays on a tile. */
+    korta_set_games(&s, names, 2);
+    CHECK(s.view == KORTA_HOME && s.selected / KORTA_PAGE_SIZE <= 1);
+    /* A firmware update covers the screen and holds the buttons. */
+    korta_set_update(&s, KORTA_UPDATE_DOWNLOAD, 45);
+    KortaView before = s.view;
+    press(&s, KORTA_B); press(&s, KORTA_A);
+    CHECK(s.view == before && s.update_percent == 45);
+    render_guarded(&s);
+    korta_set_update(&s, KORTA_UPDATE_NONE, 0);
+    korta_set_games(&s, NULL, 0);
+    for (int i = 0; i < 12; i++) press(&s, KORTA_RIGHT);
+    CHECK(s.selected / KORTA_PAGE_SIZE == 1);
+    render_guarded(&s);
+}
+
 int main(void) {
     type_hello();
     hold_and_double();
@@ -1648,6 +1729,7 @@ int main(void) {
     audit_fixes();
     phone_link();
     remote_control();
+    games_on_home();
     calc_cases();
     dice_coin_timer();
     flash_and_tools();

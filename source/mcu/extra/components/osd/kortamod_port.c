@@ -3,6 +3,9 @@
 #include "kortamod_link.h"
 #include "kortamod_sfx.h"
 #include "kortamod_web.h"
+#include "kortamod_game.h"
+#include "kortamod_games.h"
+#include "kortamod_ota.h"
 
 #include "battery.h"
 #include "brightness.h"
@@ -31,6 +34,8 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
+#include "esp_random.h"
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -66,7 +71,7 @@ static uint16_t last_note_rev;
 /* Format 1: notes as NUL-terminated strings. Format 2: a pinned count, then the same. */
 enum { NOTE_BLOB_FORMAT = 2 };
 enum { ALARM_REC = 4 + KORTA_ALARM_LABEL };
-static char note_blob[2 + KORTA_NOTE_SLOTS * (KORTA_NOTE_CAPACITY + 1)];
+#define NOTE_BLOB_MAX (2 + KORTA_NOTE_SLOTS * (KORTA_NOTE_CAPACITY + 1))
 static bool command_ready;
 static nvs_handle_t korta_nvs;
 static volatile uint32_t vol_event;
@@ -77,6 +82,7 @@ static uint32_t usb_clock_pending;
 static int usb_zone_pending = 32767;
 /* Console "korta web on|off": the REPL task may not touch shell state. */
 static int web_console_pending;  /* 0 none, 1 on, 2 off, 3 dismiss a shown message */
+static int game_console_pending = -1;  /* index to open, -2 to quit, -3 show the KortaMod tab, -1 none */
 /* A Wi-Fi change from the site waits until its answer has gone out, because
  * switching networks drops the very connection that carries the answer. */
 static uint32_t remote_join_at;
@@ -191,8 +197,9 @@ static void load_prefs(void) {
             }
         }
     }
-    if (nvs_ok) {
-        size_t len = sizeof note_blob;
+    char *note_blob = nvs_ok ? malloc(NOTE_BLOB_MAX) : NULL;   /* only while loading */
+    if (note_blob) {
+        size_t len = NOTE_BLOB_MAX;
         esp_err_t got = nvs_get_blob(korta_nvs, "notes", note_blob, &len);
         if (got == ESP_OK) {
             size_t head = len >= 2 && note_blob[0] == 2 ? 2 : len >= 1 && note_blob[0] == 1 ? 1 : 0;
@@ -215,6 +222,9 @@ static void load_prefs(void) {
                 prefs_dirty = true;
             }
         }
+        free(note_blob);
+    } else if (nvs_ok) {
+        notes_readonly = true;   /* never overwrite notes we could not read */
     }
     int16_t zone_minutes = (int16_t)(state.zone * 60);
     if (nvs_ok && nvs_get_i16(korta_nvs, "zone_m", &zone_minutes) == ESP_OK
@@ -253,15 +263,20 @@ static void commit_storage(void) {
         }
         SAVE(nvs_set_blob(korta_nvs, "alarms", alarms, sizeof alarms));
         size_t used = 0;
-        note_blob[used++] = NOTE_BLOB_FORMAT;
-        note_blob[used++] = (char)state.note_pinned;
-        for (int i = 0; i < state.note_count && i < KORTA_NOTE_SLOTS; i++) {
-            size_t n = state.note_lens[i];
-            memcpy(note_blob + used, state.notes[i], n);
-            used += n;
-            note_blob[used++] = '\0';
-        }
-        esp_err_t notes = notes_readonly ? ESP_FAIL : nvs_set_blob(korta_nvs, "notes", note_blob, used);
+        char *note_blob = notes_readonly ? NULL : malloc(NOTE_BLOB_MAX);   /* only while saving */
+        esp_err_t notes = ESP_FAIL;
+        if (note_blob) {
+            note_blob[used++] = NOTE_BLOB_FORMAT;
+            note_blob[used++] = (char)state.note_pinned;
+            for (int i = 0; i < state.note_count && i < KORTA_NOTE_SLOTS; i++) {
+                size_t n = state.note_lens[i];
+                memcpy(note_blob + used, state.notes[i], n);
+                used += n;
+                note_blob[used++] = '\0';
+            }
+            notes = nvs_set_blob(korta_nvs, "notes", note_blob, used);
+            free(note_blob);
+        } else if (!notes_readonly) notes = ESP_ERR_NO_MEM;   /* kept dirty: retried next time */
         if (!notes_readonly) SAVE(notes);
         if (notes == ESP_OK) {
             esp_err_t legacy = nvs_erase_key(korta_nvs, "note");
@@ -404,9 +419,222 @@ static void service_close_overlay(uint32_t now_ms)
     }
 }
 
+/* ---------- installed games ----------
+ * A game lives in its own task (16 KB stack, the other core) from load to quit:
+ * the UI task signals one frame at a time and paints the result. While a game
+ * runs, the phone link is paused so its TLS memory goes to the game. */
+enum { GAME_ARENA_MAX = 40 * 1024, GAME_FRAME_MS = 1000 / KGAME_FPS, GAME_WAIT_MS = 4000,
+       GAME_STACK = 16384, GAME_STACK_USE = 13312 /* the engine stops itself before this */ };
+enum { GAME_IDLE, GAME_WAITING, GAME_LOADING, GAME_RUNNING, GAME_FAILED };
+static KortaGameInfo game_list[KORTA_GAME_MAX];
+static int game_list_count;
+static TaskHandle_t game_task;
+static KGame *game;
+static void *game_parts[3];          /* engine state, screen, arena */
+static size_t game_arena_size;
+static volatile int game_state = GAME_IDLE;
+static volatile bool game_stop, game_busy;
+static volatile unsigned game_buttons;
+static int game_slot = -1;
+static uint32_t game_wait_from;
+static bool game_from_console;       /* tests: a game opened from the console runs even with the Menu closed */
+static bool wifi_paused_for_game;    /* the radio was released to give the game memory */
+static UBaseType_t game_stack_free;  /* lowest free stack seen in the game task (bytes on ESP-IDF) */
+static char game_error[96];
+static uint32_t game_last_ms;
+
+static void refresh_games(void) {
+    game_list_count = KortaGames_List(game_list, KORTA_GAME_MAX);
+    const char *names[KORTA_GAME_MAX];
+    for (int i = 0; i < game_list_count; i++) names[i] = game_list[i].name;
+    korta_set_games(&state, names, game_list_count);
+}
+static unsigned game_bits(uint16_t held) {
+    unsigned b = 0;
+    if (held & (1u << KORTA_LEFT)) b |= KGAME_LEFT;
+    if (held & (1u << KORTA_RIGHT)) b |= KGAME_RIGHT;
+    if (held & (1u << KORTA_UP)) b |= KGAME_UP;
+    if (held & (1u << KORTA_DOWN)) b |= KGAME_DOWN;
+    if (held & (1u << KORTA_A)) b |= KGAME_A;
+    if (held & (1u << KORTA_B)) b |= KGAME_B;
+    return b;
+}
+static void game_fail(const char *msg) {
+    snprintf(game_error, sizeof game_error, "%s", msg);
+    __atomic_store_n(&game_state, GAME_FAILED, __ATOMIC_RELEASE);
+}
+static void free_parts(void) {
+    for (int i = 0; i < 3; i++) { heap_caps_free(game_parts[i]); game_parts[i] = NULL; }
+}
+/* The game's task: compile (deep recursion, hence its own stack), then one frame
+ * per signal until told to stop. The source is read straight from flash. */
+static void game_main(void *arg) {
+    (void)arg;
+    /* Created before the memory it uses: wait until game_allocate has it all. */
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    if (game_stop || !game_parts[2]) {
+        /* No memory (the error is already shown): wait to be stopped, then leave. */
+        while (!game_stop) vTaskDelay(pdMS_TO_TICKS(50));
+        free_parts();
+        __atomic_store_n(&game_state, GAME_IDLE, __ATOMIC_RELEASE);
+        game_task = NULL;
+        vTaskDelete(NULL);
+    }
+    const char *source = NULL;
+    size_t length = 0;
+    uint32_t map = KortaGames_Map(game_slot, &source, &length);
+    if (!map) game_fail("The game could not be read from storage.");
+    else if (!(game = kgame_create_parts(game_parts[0], kgame_state_size(), game_parts[1], game_parts[2], game_arena_size, esp_random())))
+        game_fail("The game engine could not start.");
+    else {
+        char key[8];
+        snprintf(key, sizeof key, "gs%d", game_slot);
+        uint32_t bits = 0;
+        if (nvs_ok && nvs_get_u32(korta_nvs, key, &bits) == ESP_OK) { float v; memcpy(&v, &bits, sizeof v); kgame_set_saved(game, v); }
+        kgame_set_stack_limit(game, GAME_STACK_USE);
+        if (kgame_load(game, source, length) != 0) game_fail(kgame_error(game));
+        else __atomic_store_n(&game_state, GAME_RUNNING, __ATOMIC_RELEASE);
+    }
+    KortaGames_Unmap(map);
+    game_stack_free = uxTaskGetStackHighWaterMark(NULL);
+    while (!game_stop && game_state == GAME_RUNNING) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (game_stop) break;
+        if (kgame_frame(game, game_buttons) != 0) { game_fail(kgame_error(game)); break; }
+        float v;
+        if (kgame_saved(game, &v) && nvs_ok) {
+            char key[8];
+            uint32_t bits;
+            memcpy(&bits, &v, sizeof bits);
+            snprintf(key, sizeof key, "gs%d", game_slot);
+            if (nvs_set_u32(korta_nvs, key, bits) == ESP_OK) nvs_commit(korta_nvs);
+        }
+        UBaseType_t left = uxTaskGetStackHighWaterMark(NULL);
+        if (left < game_stack_free) game_stack_free = left;
+        __atomic_store_n(&game_busy, false, __ATOMIC_RELEASE);
+        /* Always yield a tick: a game slower than 30 fps must not starve this core's
+         * idle task (the task watchdog would restart the Chromatic). */
+        vTaskDelay(1);
+    }
+    /* The UI stops painting from the engine before it sets game_stop. */
+    while (!game_stop) vTaskDelay(pdMS_TO_TICKS(50));
+    game = NULL;
+    free_parts();
+    __atomic_store_n(&game_state, GAME_IDLE, __ATOMIC_RELEASE);
+    game_task = NULL;
+    vTaskDelete(NULL);
+}
+static void game_start(int index) {
+    if (game_task || game_state != GAME_IDLE || index < 0 || index >= game_list_count) {
+        korta_arcade_status(&state, KORTA_ARCADE_ERROR, "A game is still closing. Try again.");
+        return;
+    }
+    game_slot = game_list[index].slot;
+    /* Wi-Fi's driver buffers are the largest memory the game can borrow. */
+    wifi_paused_for_game = state.link.phase != KORTA_WIFI_OFF;
+    if (wifi_paused_for_game) KortaLink_Command(KORTA_LINK_OFF, NULL, NULL);
+    game_stop = false;
+    game_busy = false;
+    game_error[0] = '\0';
+    game_wait_from = (uint32_t)(esp_timer_get_time() / 1000);
+    game_state = GAME_WAITING;
+}
+/* Once the radio has let go (or after a few seconds). The fixed-size parts come
+ * first (task stack, engine state, screen), then the arena takes the largest
+ * block left: a fragmented heap still fits, and a bigger arena only helps. */
+static void game_allocate(void) {
+    const uint32_t caps = MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL;
+    game_state = GAME_LOADING;
+    if (xTaskCreatePinnedToCore(game_main, "korta-game", GAME_STACK, NULL, 3, &game_task, 0) != pdPASS) {
+        game_task = NULL;
+        game_fail("Not enough memory to start the game.");
+        return;
+    }
+    game_parts[0] = heap_caps_malloc(kgame_state_size(), caps);
+    game_parts[1] = heap_caps_malloc(KGAME_FB_BYTES, caps);
+    size_t big = heap_caps_get_largest_free_block(caps);
+    size_t want = big > GAME_ARENA_MAX ? GAME_ARENA_MAX : big;
+    for (size_t size = want & ~(size_t)1023; size >= KGAME_ARENA_MIN && game_parts[0] && game_parts[1] && !game_parts[2]; size -= 1024) {
+        game_parts[2] = heap_caps_malloc(size, caps);
+        game_arena_size = size;
+    }
+    if (!game_parts[0] || !game_parts[1] || !game_parts[2]) {
+        free_parts();
+        game_fail("Not enough memory to start the game.");
+    }
+    xTaskNotifyGive(game_task);   /* go (or, without memory, wait to be stopped) */
+}
+static void game_end(void) {
+    if (game_task) {
+        game_stop = true;
+        xTaskNotifyGive(game_task);
+    } else if (game_state == GAME_WAITING || game_state == GAME_FAILED) {
+        free_parts();
+        game_state = GAME_IDLE;
+    }
+    if (wifi_paused_for_game) {
+        wifi_paused_for_game = false;
+        if (state.wifi_keep && saved_ssid[0]) KortaLink_Command(KORTA_LINK_JOIN, saved_ssid, saved_pass);
+        else if (state.wifi_keep || state.web_keep) KortaLink_Command(KORTA_LINK_ON, NULL, NULL);
+    }
+}
+/* Called every poll from the UI task. */
+static void service_game(uint32_t now_ms, uint16_t held, bool visible) {
+    int st = __atomic_load_n(&game_state, __ATOMIC_ACQUIRE);
+    if (state.view != KORTA_ARCADE) {
+        game_from_console = false;
+        if (game_task || st != GAME_IDLE || wifi_paused_for_game) game_end();
+        return;
+    }
+    if (st == GAME_WAITING) {
+        bool roomy = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL) >= GAME_ARENA_MAX
+            && state.link.phase == KORTA_WIFI_OFF;
+        if (roomy || (uint32_t)(now_ms - game_wait_from) >= GAME_WAIT_MS) game_allocate();
+        return;
+    }
+    if (state.arcade_phase == KORTA_ARCADE_LOADING) {
+        if (st == GAME_RUNNING) { korta_arcade_status(&state, KORTA_ARCADE_RUNNING, NULL); game_last_ms = now_ms; }
+        else if (st == GAME_FAILED) korta_arcade_status(&state, KORTA_ARCADE_ERROR, game_error);
+        return;
+    }
+    if (state.arcade_phase == KORTA_ARCADE_RUNNING && st == GAME_FAILED) {
+        korta_arcade_status(&state, KORTA_ARCADE_ERROR, game_error);
+        return;
+    }
+    if ((!visible && !game_from_console) || state.arcade_paused || st != GAME_RUNNING || !game_task) return;
+    if ((uint32_t)(now_ms - game_last_ms) < GAME_FRAME_MS) return;
+    if (__atomic_load_n(&game_busy, __ATOMIC_ACQUIRE)) return;  /* a slow frame: skip, don't queue */
+    game_last_ms = (uint32_t)(now_ms - game_last_ms) > 3 * GAME_FRAME_MS ? now_ms : game_last_ms + GAME_FRAME_MS;
+    game_buttons = game_bits(held);
+    game_busy = true;
+    xTaskNotifyGive(game_task);
+}
+static bool game_active(void) { return game_task != NULL || game_state != GAME_IDLE; }
+
+/* ---------- firmware updates from the site ---------- */
+static uint32_t update_at;
+static struct { char url[160], sha256[65], signature[100]; uint32_t size; } update_cmd;
+static bool power_ok(void) { return state.hw.charging || (state.hw.battery_known && state.hw.battery_pct >= 30); }
+static void service_update(uint32_t now_ms) {
+    static bool healthy;
+    if (!healthy && esp_timer_get_time() > 10 * 1000000LL) { healthy = true; KortaOta_MarkHealthy(); }
+    if (update_at && (int32_t)(now_ms - update_at) >= 0) {
+        update_at = 0;
+        KortaOta_Begin(update_cmd.url, update_cmd.size, update_cmd.sha256, update_cmd.signature, power_ok());
+    }
+    KortaOtaStatus ota = KortaOta_Status();
+    int phase = ota.phase == KORTA_OTA_DOWNLOAD ? KORTA_UPDATE_DOWNLOAD : ota.phase == KORTA_OTA_VERIFY ? KORTA_UPDATE_VERIFY
+        : ota.phase == KORTA_OTA_RESTART ? KORTA_UPDATE_RESTART : ota.phase == KORTA_OTA_FINISH ? KORTA_UPDATE_FINISH : KORTA_UPDATE_NONE;
+    korta_set_update(&state, phase, ota.percent);
+}
+static bool update_busy(void) {
+    KortaOtaPhase p = KortaOta_Status().phase;
+    return p == KORTA_OTA_DOWNLOAD || p == KORTA_OTA_VERIFY || p == KORTA_OTA_RESTART || p == KORTA_OTA_FINISH;
+}
+
 bool Korta_KeepAwake(void)
 {
-    return __atomic_load_n(&close_phase, __ATOMIC_ACQUIRE) != CLOSE_IDLE;
+    return __atomic_load_n(&close_phase, __ATOMIC_ACQUIRE) != CLOSE_IDLE || game_active() || update_busy();
 }
 
 /* The next moment a running timer or an armed alarm needs the MCU, so light
@@ -570,6 +798,12 @@ static void apply_action(const KortaAction *action) {
         case KORTA_ACT_WEB_FORGET:
             KortaWeb_ForgetAll();
             break;
+        case KORTA_ACT_GAME_START:
+            game_start((int)action->value);
+            break;
+        case KORTA_ACT_GAME_STOP:
+            game_end();
+            break;
         case KORTA_ACT_WIFI_FORGET:
             saved_ssid[0] = '\0';
             saved_pass[0] = '\0';
@@ -621,6 +855,10 @@ static void service_phone_link(KortaLink *link) {
         korta_web_wifi(&state, remote_ssid, remote_pass);
         memset(remote_pass, 0, sizeof remote_pass);
     }
+    int console_game = __atomic_exchange_n(&game_console_pending, -1, __ATOMIC_ACQ_REL);
+    if (console_game >= 0) { korta_open_game(&state, console_game); game_from_console = state.view == KORTA_ARCADE; }
+    else if (console_game == -2 && state.view == KORTA_ARCADE) { state.arcade_paused = true; state.arcade_sel = 1; korta_press(&state, KORTA_A); }
+    else if (console_game == -3) MenuMgr_ShowTab(kTabID_Korta);   /* tests: the Menu opens on KortaMod (set it while closed) */
     int console = __atomic_exchange_n(&web_console_pending, 0, __ATOMIC_ACQ_REL);
     if (console == 3) {
         if (state.view == KORTA_MESSAGE) korta_hidden(&state);
@@ -628,89 +866,154 @@ static void service_phone_link(KortaLink *link) {
         state.web_keep = console == 1;
         write_prefs();
     }
-    KortaWeb_Service(state.web_keep, link->phase == KORTA_WIFI_ONLINE, state.view == KORTA_PHONE);
+    /* Paused while a game runs (its memory) and while an update downloads (its own TLS). */
+    KortaOtaPhase ota = KortaOta_Status().phase;
+    bool ota_net = ota == KORTA_OTA_DOWNLOAD || ota == KORTA_OTA_VERIFY;
+    KortaWeb_Service(state.web_keep && !game_active() && state.view != KORTA_ARCADE && !ota_net,
+        link->phase == KORTA_WIFI_ONLINE, state.view == KORTA_PHONE);
     KortaWeb_Status(link);
     if (!link->web_ready) return;
     /* Apply a request first and publish afterwards, so the reply a browser gets
      * is never followed by a read of the older state. */
-    static KortaWebCmd cmd;
-    bool took = KortaWeb_TakeCommand(&cmd);
+    KortaWebCmd *taken = KortaWeb_TakeCommand();
+    bool took = taken != NULL;
+    KortaWebCmd *const c = taken;   /* every use below is guarded by `took` */
     int result = KORTA_WEB_INVALID;
-    if (took && cmd.kind == KORTA_WEB_CMD_NOTES) {
+    if (took && c->kind == KORTA_WEB_CMD_NOTES) {
         const char *texts[KORTA_NOTE_SLOTS];
-        for (int i = 0; i < KORTA_NOTE_SLOTS; i++) texts[i] = cmd.notes[i];
-        result = korta_web_notes(&state, cmd.rev, texts, cmd.count, cmd.pinned);
-    } else if (took && cmd.kind == KORTA_WEB_CMD_ALARM) {
-        result = korta_web_alarm(&state, cmd.alarm, cmd.alarm_on, cmd.hour, cmd.minute, cmd.days, cmd.text);
-    } else if (took && cmd.kind == KORTA_WEB_CMD_SETTING) {
-        result = korta_web_setting(&state, cmd.setting, cmd.value);
-    } else if (took && cmd.kind == KORTA_WEB_CMD_MESSAGE) {
-        result = korta_web_message(&state, cmd.text, cmd.find);
-    } else if (took && cmd.kind == KORTA_WEB_CMD_TIMER) {
-        result = korta_web_timer(&state, cmd.timer_action, cmd.countdown, cmd.seconds);
-    } else if (took && cmd.kind == KORTA_WEB_CMD_WIFI) {
-        result = korta_web_wifi_check(cmd.ssid, cmd.password);
+        for (int i = 0; i < KORTA_NOTE_SLOTS; i++) texts[i] = c->notes[i];
+        result = korta_web_notes(&state, c->rev, texts, c->count, c->pinned);
+    } else if (took && c->kind == KORTA_WEB_CMD_ALARM) {
+        result = korta_web_alarm(&state, c->alarm, c->alarm_on, c->hour, c->minute, c->days, c->text);
+    } else if (took && c->kind == KORTA_WEB_CMD_SETTING) {
+        result = korta_web_setting(&state, c->setting, c->value);
+    } else if (took && c->kind == KORTA_WEB_CMD_MESSAGE) {
+        result = korta_web_message(&state, c->text, c->find);
+    } else if (took && c->kind == KORTA_WEB_CMD_TIMER) {
+        result = korta_web_timer(&state, c->timer_action, c->countdown, c->seconds);
+    } else if (took && c->kind == KORTA_WEB_CMD_WIFI) {
+        result = korta_web_wifi_check(c->ssid, c->password);
         if (result == KORTA_WEB_OK) {
-            memcpy(remote_ssid, cmd.ssid, sizeof remote_ssid);
-            memcpy(remote_pass, cmd.password, sizeof remote_pass);
+            memcpy(remote_ssid, c->ssid, sizeof remote_ssid);
+            memcpy(remote_pass, c->password, sizeof remote_pass);
             remote_join_at = (uint32_t)(esp_timer_get_time() / 1000) + 2000u;
             if (!remote_join_at) remote_join_at = 1;
         }
-        memset(cmd.password, 0, sizeof cmd.password);
-    } else if (took && cmd.kind == KORTA_WEB_CMD_CLOCK) {
-        sync_clock(cmd.epoch, cmd.zone_minutes);
+        memset(c->password, 0, sizeof c->password);
+    } else if (took && c->kind == KORTA_WEB_CMD_GAMES) {
+        refresh_games();
+        result = KORTA_WEB_OK;
+    } else if (took && c->kind == KORTA_WEB_CMD_UPDATE) {
+        if (!KortaOta_Available()) result = 5;
+        else if (update_busy() || update_at || game_active()) result = KORTA_WEB_BUSY;
+        else if (!power_ok()) result = KORTA_WEB_BUSY;
+        else {
+            memcpy(update_cmd.url, c->url, sizeof update_cmd.url);
+            memcpy(update_cmd.sha256, c->sha256, sizeof update_cmd.sha256);
+            memcpy(update_cmd.signature, c->signature, sizeof update_cmd.signature);
+            update_cmd.size = c->size;
+            update_at = (uint32_t)(esp_timer_get_time() / 1000) + 2000u;
+            if (!update_at) update_at = 1;
+            result = KORTA_WEB_OK;
+        }
+    } else if (took && c->kind == KORTA_WEB_CMD_CLOCK) {
+        sync_clock(c->epoch, c->zone_minutes);
         KortaStatus status;
         fill_status(&status);
         korta_set_status(&state, &status);
         result = KORTA_WEB_OK;
     }
-    static KortaWebView view;
-    view.rev = state.note_rev;
-    view.count = state.note_count;
-    view.pinned = state.note_pinned;
-    memcpy(view.notes, state.notes, sizeof view.notes);
-    view.editing = state.view == KORTA_KEYBOARD && !state.typing_pass && !state.typing_find;
-    memcpy(view.alarms, state.alarms, sizeof view.alarms);
-    view.alert = state.view == KORTA_ALARM_RING ? 1 : state.view == KORTA_TIMER_RING ? 2 : 0;
-    memcpy(view.alert_label, state.alarms[state.alarm_ringing % KORTA_ALARM_MAX].label, sizeof view.alert_label);
-    view.hour12 = state.hour12;
-    view.time_known = state.time_known;
-    view.zone_minutes = state.zone_minutes;
-    view.battery_known = state.hw.battery_known;
-    view.battery_pct = state.hw.battery_pct;
-    view.charging = state.hw.charging;
-    memcpy(view.mcu, state.hw.mcu, sizeof view.mcu);
-    memcpy(view.fpga, state.hw.fpga, sizeof view.fpga);
-    memcpy(view.chromatic, state.hw.chromatic, sizeof view.chromatic);
-    view.settings.brightness = state.view == KORTA_FLASH || state.view == KORTA_ALARM_RING || state.view == KORTA_TIMER_RING
+    KortaWebView *vp = KortaWeb_ViewBegin();
+    if (!vp) { if (took) KortaWeb_Complete(result); return; }
+    vp->rev = state.note_rev;
+    vp->count = state.note_count;
+    vp->pinned = state.note_pinned;
+    memcpy(vp->notes, state.notes, sizeof vp->notes);
+    vp->editing = state.view == KORTA_KEYBOARD && !state.typing_pass && !state.typing_find;
+    memcpy(vp->alarms, state.alarms, sizeof vp->alarms);
+    vp->alert = state.view == KORTA_ALARM_RING ? 1 : state.view == KORTA_TIMER_RING ? 2 : 0;
+    memcpy(vp->alert_label, state.alarms[state.alarm_ringing % KORTA_ALARM_MAX].label, sizeof vp->alert_label);
+    vp->hour12 = state.hour12;
+    vp->time_known = state.time_known;
+    vp->zone_minutes = state.zone_minutes;
+    vp->battery_known = state.hw.battery_known;
+    vp->battery_pct = state.hw.battery_pct;
+    vp->charging = state.hw.charging;
+    memcpy(vp->mcu, state.hw.mcu, sizeof vp->mcu);
+    memcpy(vp->fpga, state.hw.fpga, sizeof vp->fpga);
+    memcpy(vp->chromatic, state.hw.chromatic, sizeof vp->chromatic);
+    vp->settings.brightness = state.view == KORTA_FLASH || state.view == KORTA_ALARM_RING || state.view == KORTA_TIMER_RING
         || (state.view == KORTA_MESSAGE && state.msg_find) ? state.bright_keep : state.hw.brightness;
-    view.settings.night = state.night;
-    view.settings.flow = state.flow;
-    view.settings.hour12 = state.hour12;
-    view.settings.silent = state.hw.silent;
-    view.settings.blend = state.hw.blend;
-    view.settings.cc_lcd = state.hw.cc_lcd;
-    view.settings.cc_usb = state.hw.cc_usb;
-    view.settings.transit = state.hw.transit;
-    view.settings.dpad4 = state.hw.dpad != 0;
-    view.settings.low_batt = state.hw.low_batt;
-    view.settings.player = state.hw.player;
-    view.settings.palette = state.hw.palette;
-    view.settings.gbc = state.hw.gbc_game;
-    view.timer.countdown = state.timer_count;
-    view.timer.running = state.timer_run;
-    view.timer.done = state.timer_done;
-    view.timer.set_s = state.timer_set;
-    view.timer.shown_ms = korta_timer_ms(&state);
-    view.wifi.phase = state.link.phase;
-    memcpy(view.wifi.ssid, state.link.ssid, sizeof view.wifi.ssid);
-    view.wifi.count = state.link.count;
-    memcpy(view.wifi.nets, state.link.nets, sizeof view.wifi.nets);
-    KortaWeb_Publish(&view);
+    vp->settings.night = state.night;
+    vp->settings.flow = state.flow;
+    vp->settings.hour12 = state.hour12;
+    vp->settings.silent = state.hw.silent;
+    vp->settings.blend = state.hw.blend;
+    vp->settings.cc_lcd = state.hw.cc_lcd;
+    vp->settings.cc_usb = state.hw.cc_usb;
+    vp->settings.transit = state.hw.transit;
+    vp->settings.dpad4 = state.hw.dpad != 0;
+    vp->settings.low_batt = state.hw.low_batt;
+    vp->settings.player = state.hw.player;
+    vp->settings.palette = state.hw.palette;
+    vp->settings.gbc = state.hw.gbc_game;
+    vp->timer.countdown = state.timer_count;
+    vp->timer.running = state.timer_run;
+    vp->timer.done = state.timer_done;
+    vp->timer.set_s = state.timer_set;
+    vp->timer.shown_ms = korta_timer_ms(&state);
+    vp->wifi.phase = state.link.phase;
+    memcpy(vp->wifi.ssid, state.link.ssid, sizeof vp->wifi.ssid);
+    vp->wifi.count = state.link.count;
+    memcpy(vp->wifi.nets, state.link.nets, sizeof vp->wifi.nets);
+    vp->games_ready = KortaGames_Available();
+    vp->game_count = (uint8_t)game_list_count;
+    for (int i = 0; i < game_list_count; i++) {
+        vp->games[i].slot = game_list[i].slot;
+        memcpy(vp->games[i].name, game_list[i].name, sizeof vp->games[i].name);
+        vp->games[i].size = (uint16_t)game_list[i].size;
+    }
+    vp->ota_available = KortaOta_Available();
+    KortaOtaStatus ota_status = KortaOta_Status();
+    vp->ota_phase = (uint8_t)ota_status.phase;
+    vp->ota_percent = ota_status.percent;
+    memcpy(vp->ota_error, ota_status.error, sizeof vp->ota_error);
+    KortaWeb_ViewEnd();
     if (took) KortaWeb_Complete(result);
 }
 
+/* Free heap blocks, largest first (takes them one by one, then gives them back). */
+static void heap_map(void) {
+    void *taken[24];
+    int n = 0;
+    printf("korta heapmap free %u:", (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL));
+    while (n < 24) {
+        size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+        if (big < 2048) break;
+        taken[n] = heap_caps_malloc(big, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+        if (!taken[n]) break;
+        printf(" %u", (unsigned)big);
+        n++;
+    }
+    while (n) heap_caps_free(taken[--n]);
+    printf("\r\n");
+}
 static int korta_command(int argc, char **argv) {
+    if (argc >= 2 && argv && argv[1] && strcmp(argv[1], "heapmap") == 0) { heap_map(); return 0; }
+    if (argc >= 2 && argv && argv[1] && strcmp(argv[1], "game") == 0) {
+        /* korta game: list; korta game N: open game N; korta game quit */
+        if (argc >= 3 && argv[2] && strcmp(argv[2], "quit") == 0) __atomic_store_n(&game_console_pending, -2, __ATOMIC_RELEASE);
+        else if (argc >= 3 && argv[2] && strcmp(argv[2], "show") == 0) __atomic_store_n(&game_console_pending, -3, __ATOMIC_RELEASE);
+        else if (argc >= 3 && argv[2]) __atomic_store_n(&game_console_pending, atoi(argv[2]), __ATOMIC_RELEASE);
+        printf("korta games %d ready %d view %d phase %d state %d", game_list_count, KortaGames_Available(), state.view, state.arcade_phase, game_state);
+        for (int i = 0; i < game_list_count; i++) printf(" [%d:%s:%lu]", game_list[i].slot, game_list[i].name, (unsigned long)game_list[i].size);
+        KGameUsage usage = {0};
+        if (game && game_state == GAME_RUNNING) kgame_usage(game, &usage);
+        printf(" frames %u arena %u heap %u big %u stack %u err %s diag %s\r\n", (unsigned)usage.frames, (unsigned)game_arena_size, (unsigned)esp_get_free_heap_size(),
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL), (unsigned)game_stack_free,
+            state.arcade_error, KortaWeb_GameDiag());
+        return 0;
+    }
     if (argc >= 2 && argv && argv[1] && strcmp(argv[1], "web") == 0) {
         if (argc >= 3 && argv[2] && strcmp(argv[2], "on") == 0) __atomic_store_n(&web_console_pending, 1, __ATOMIC_RELEASE);
         else if (argc >= 3 && argv[2] && strcmp(argv[2], "off") == 0) __atomic_store_n(&web_console_pending, 2, __ATOMIC_RELEASE);
@@ -773,6 +1076,8 @@ void Korta_Poll(void) {
         KortaWeb_Init(nvs_ok ? korta_nvs : 0);
         KortaSfx_Init();
         KortaLink_Start();
+        KortaGames_Init();
+        refresh_games();
         register_command();
         initialized = true;
         if (state.wifi_keep) {
@@ -794,12 +1099,14 @@ void Korta_Poll(void) {
     korta_set_link(&state, &link);
     uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
     service_close_overlay(now_ms);
+    service_update(now_ms);
     uint32_t ev = __atomic_exchange_n(&vol_event, 0, __ATOMIC_ACQ_REL);
     if (ev & 0x40000000u) korta_sync_volume(&state, (uint8_t)ev);
     else if (ev & 0x80000000u) korta_note_volume(&state, (uint8_t)ev, now_ms);
     if (!OSD_IsVisible() || MenuMgr_CurrentTab() != kTabID_Korta) {
         if (had_visible) korta_hidden(&state);
         korta_service(&state, now_ms);
+        service_game(now_ms, 0, false);
         KortaAction idle;
         while (korta_take_action(&state, &idle)) apply_action(&idle);
         uint8_t idle_sfx = korta_take_sfx(&state);
@@ -825,6 +1132,7 @@ void Korta_Poll(void) {
     bool leave = korta_frame(&state, held, now_ms);
     KortaAction action;
     while (korta_take_action(&state, &action)) apply_action(&action);
+    service_game(now_ms, held, true);
     uint8_t sfx = korta_take_sfx(&state);
     if (sfx) {
         uint8_t vol = state.hw.silent ? 0 : (sfx == KORTA_SFX_ALERT ? state.vol_ring : state.vol_sys);
@@ -849,6 +1157,15 @@ void Korta_Poll(void) {
 bool Korta_Paint(uint16_t *dst) {
     if (!initialized || dst == NULL) return false;
     if (!OSD_IsVisible() || MenuMgr_CurrentTab() != kTabID_Korta) return false;
+    if (state.view == KORTA_ARCADE && state.arcade_phase == KORTA_ARCADE_RUNNING && game
+        && __atomic_load_n(&game_state, __ATOMIC_ACQUIRE) == GAME_RUNNING) {
+        /* The game's 4-bit screen, then any overlay (pause menu, volume). */
+        const uint8_t *px = kgame_pixels(game);
+        for (int i = 0; i < KGAME_W * KGAME_H / 2; i++) {
+            dst[2 * i] = kgame_palette565[px[i] >> 4];
+            dst[2 * i + 1] = kgame_palette565[px[i] & 15];
+        }
+    }
     korta_render(&state, dst);
     return true;
 }

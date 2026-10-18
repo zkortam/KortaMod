@@ -6,7 +6,7 @@
 #include <stdint.h>
 
 /* Phone link: the device keeps an HTTPS connection to the companion site
- * (kortamod.vercel.app), reporting its state and pairing code and collecting
+ * (kortamod.app), reporting its state and pairing code and collecting
  * what paired browsers ask for. It never touches the UI state: the UI task
  * publishes a view and applies the commands it takes, through the core. */
 
@@ -31,11 +31,19 @@ typedef struct {
     } settings;
     struct { bool countdown, running, done; uint16_t set_s; uint32_t shown_ms; } timer;
     struct { uint8_t phase; char ssid[33]; uint8_t count; KortaNet nets[KORTA_NET_MAX]; } wifi;  /* never a password */
+    uint8_t game_count;
+    struct { uint8_t slot; char name[KORTA_GAME_NAME + 1]; uint16_t size; } games[KORTA_GAME_MAX];
+    bool games_ready;          /* the flash layout has a games partition */
+    bool ota_available;        /* the flash layout can take updates from the site */
+    uint8_t ota_phase, ota_percent;  /* KortaOtaPhase */
+    char ota_error[48];
 } KortaWebView;
 
 typedef enum {
     KORTA_WEB_CMD_NOTES = 1, KORTA_WEB_CMD_ALARM, KORTA_WEB_CMD_CLOCK,
-    KORTA_WEB_CMD_SETTING, KORTA_WEB_CMD_MESSAGE, KORTA_WEB_CMD_TIMER, KORTA_WEB_CMD_WIFI
+    KORTA_WEB_CMD_SETTING, KORTA_WEB_CMD_MESSAGE, KORTA_WEB_CMD_TIMER, KORTA_WEB_CMD_WIFI,
+    KORTA_WEB_CMD_GAMES,     /* the installed games changed (the phone link wrote them): reload */
+    KORTA_WEB_CMD_UPDATE     /* install signed firmware from url */
 } KortaWebCmdKind;
 
 /* One change requested by a browser, already cleaned to what the screen can show. */
@@ -54,18 +62,25 @@ typedef struct {
     int timer_action, seconds;
     bool countdown;
     char ssid[33], password[64];
+    char url[160], sha256[65], signature[100];
+    uint32_t size;
 } KortaWebCmd;
 
 void KortaWeb_Init(nvs_handle_t nvs);
 /* UI task, every poll: sync while enabled and the network is up; more often while
  * the Phone screen is shown. */
 void KortaWeb_Service(bool enabled, bool online, bool screen);
-void KortaWeb_Publish(const KortaWebView *view);
+/* UI task: fill the published view in place (no copy) between Begin and End. */
+KortaWebView *KortaWeb_ViewBegin(void);
+void KortaWeb_ViewEnd(void);
 /* UI task: take a pending command, apply it, then report a KORTA_WEB_* result. */
-bool KortaWeb_TakeCommand(KortaWebCmd *out);
+/* The pending command, owned by the UI task until KortaWeb_Complete; NULL if none. */
+KortaWebCmd *KortaWeb_TakeCommand(void);
 void KortaWeb_Complete(int result);
 /* Fills the web_* fields of the link shown on the Phone screen. */
 void KortaWeb_Status(KortaLink *link);
 void KortaWeb_ForgetAll(void);
 /* Last sync outcome for diagnostics: HTTP status, or 0 for a connection/TLS failure. */
 int KortaWeb_LastStatus(void);
+/* The last game install problem, if any (console diagnostics). */
+const char *KortaWeb_GameDiag(void);

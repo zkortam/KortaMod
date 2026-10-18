@@ -12,6 +12,8 @@
 #define KORTA_ALARM_MAX 4
 #define KORTA_ALARM_LABEL 12
 #define KORTA_DAYS_ALL 0x7F   /* bit 0 Monday .. bit 6 Sunday; 0 rings once */
+#define KORTA_GAME_MAX 32
+#define KORTA_GAME_NAME 12
 
 typedef enum {
     KORTA_UP, KORTA_RIGHT, KORTA_DOWN, KORTA_LEFT,
@@ -50,6 +52,7 @@ typedef enum {
     KORTA_NOTE_OPEN,
     KORTA_PHONE,
     KORTA_MESSAGE,          /* a message or "find me" sent from the companion site */
+    KORTA_ARCADE,           /* an installed game is running (the port draws it) */
     KORTA_VIEW_COUNT
 } KortaView;
 
@@ -89,7 +92,9 @@ typedef enum {
      * Lets the port undo an override that a power cut interrupted. */
     KORTA_ACT_BRIGHT_HOLD,
     KORTA_ACT_WEB,          /* value 1: serve the phone link while Wi-Fi is up; 0: stop */
-    KORTA_ACT_WEB_FORGET    /* revoke every paired browser */
+    KORTA_ACT_WEB_FORGET,   /* revoke every paired browser */
+    KORTA_ACT_GAME_START,   /* value: index into the installed games */
+    KORTA_ACT_GAME_STOP
 } KortaActionKind;
 
 enum {
@@ -237,6 +242,16 @@ typedef struct {
     bool clock_dirty;
     uint16_t year;
     uint8_t month, day, hour, min, sec;
+    /* Installed games, shown on Home after the built-in apps. */
+    uint8_t game_count;
+    char game_names[KORTA_GAME_MAX][KORTA_GAME_NAME + 1];
+    uint8_t game_cur;        /* the game in KORTA_ARCADE */
+    uint8_t arcade_phase;    /* KORTA_ARCADE_* */
+    bool arcade_paused;
+    uint8_t arcade_sel;      /* pause menu: 0 resume, 1 quit */
+    char arcade_error[96];
+    uint8_t update_phase;    /* firmware update from the site: KORTA_UPDATE_* */
+    uint8_t update_percent;
     KortaAlarm alarms[KORTA_ALARM_MAX];
     uint8_t alarm_cur;       /* the alarm shown in the Alarm editor */
     uint8_t alarm_ringing;   /* which alarm the ring screen is for */
@@ -300,6 +315,16 @@ void korta_set_link(KortaState *state, const KortaLink *link);
 void korta_apply_prefs(KortaState *state, uint8_t flags, int8_t zone, uint8_t alarm_h, uint8_t alarm_m);
 // Append one stored note in display order. Empty text and a full list are ignored.
 void korta_load_note(KortaState *state, const char *text);
+enum { KORTA_ARCADE_LOADING, KORTA_ARCADE_RUNNING, KORTA_ARCADE_ERROR };
+enum { KORTA_UPDATE_NONE, KORTA_UPDATE_DOWNLOAD, KORTA_UPDATE_VERIFY, KORTA_UPDATE_RESTART, KORTA_UPDATE_FINISH };
+/* While an update runs the screen shows its progress and buttons do nothing. */
+void korta_set_update(KortaState *state, int phase, int percent);
+/* The installed games' names, in Home order (each up to KORTA_GAME_NAME characters). */
+void korta_set_games(KortaState *state, const char *const *names, int count);
+/* Opens installed game `index` as if chosen on Home (console and tests). */
+void korta_open_game(KortaState *state, int index);
+/* The port reports a game finished loading, or failed (with a message). */
+void korta_arcade_status(KortaState *state, int phase, const char *error);
 /* After loading: the first n notes are pinned (clamped to the count). */
 void korta_load_pins(KortaState *state, int n);
 

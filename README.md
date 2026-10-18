@@ -2,7 +2,7 @@
 
 KortaMod adds a compact app launcher and utilities to the Chromatic's Menu screen. This release is for the **Chromatic v4.2 firmware generation with the ESP32 MCU app `0.13.4` and stock FPGA `18.8`**. It has been installed on one physical Chromatic. The installer checks the USB device, MCU version, and partition layout before writing.
 
-**Current build:** `0.13.4-korta7`, tested on a physical Chromatic (host tests, an exhaustive UI model check, and end-to-end tests against the live companion site). Release ZIPs on the Releases page may contain an earlier build until the next release is cut.
+**Current build:** `0.13.4-korta8`, tested on a physical Chromatic (host tests, an exhaustive UI model check, a fuzzed games engine, and end-to-end tests against the live companion site). Release ZIPs on the Releases page may contain an earlier build until the next release is cut.
 
 ## Install in three steps
 
@@ -10,7 +10,7 @@ KortaMod adds a compact app launcher and utilities to the Chromatic's Menu scree
 2. Plug your Chromatic into the laptop with a USB data cable. Close any serial monitor or updater using it.
 3. Run **Install.command** (Mac), **Install.bat** (Windows), or **Install.sh** (Linux). Keep the window open until it says **Installed**. On macOS, if Gatekeeper blocks the unsigned community installer, Control-click the blocked executable and choose Open. On Windows, SmartScreen may show **More info → Run anyway**. On Linux, your account may need serial port permission; the installer will report a port error if access is denied.
 
-The installer saves a complete backup to `Documents/KortaMod Backups` **before** flashing. Keep the `.bin` and matching `.json` files together and private; the backup can contain your settings and Wi-Fi credentials. The files are created with private permissions on macOS and Linux. Restore checks the backup checksum and connected device identity before writing. Installation writes only the MCU application at `0x10000`, verifies it, and syncs the clock to the laptop's current time and UTC offset. It leaves the bootloader, partition table, FPGA, and your saved settings in place. A full backup takes a few minutes; do not unplug during the process.
+The installer saves a complete backup to `Documents/KortaMod Backups` **before** flashing. Keep the `.bin` and matching `.json` files together and private; the backup can contain your settings and Wi-Fi credentials. The files are created with private permissions on macOS and Linux. Restore checks the backup checksum and connected device identity before writing. Installation writes the MCU application at `0x10000`, verifies it, and syncs the clock to the laptop's current time and UTC offset. The first install also replaces the partition table with KortaMod's layout, which keeps the stock entries (settings, factory app) and adds an update slot and game storage in flash the stock firmware leaves empty; this is what lets later versions install from the companion site. It leaves the bootloader, FPGA, and your saved settings in place. Restoring your backup puts back the original partition table too. A full backup takes a few minutes; do not unplug during the process.
 
 Press the physical **Menu** button on the Chromatic to open KortaMod after it restarts. The firmware lives in the Menu overlay, so the normal cartridge display is still the default outside Menu.
 
@@ -39,16 +39,29 @@ The clock follows the laptop's local time when you install or run **SyncClock.co
 
 ## Phone link
 
-Manage your Chromatic from **[kortamod.vercel.app](https://kortamod.vercel.app)** on any phone or computer. Your phone and the Chromatic don't need to be on the same network.
+Manage your Chromatic from **[kortamod.app](https://kortamod.app)** on any phone or computer. Your phone and the Chromatic don't need to be on the same network.
 
 1. On the Chromatic, open **Home → Phone** and switch **Phone link** on (it turns Wi-Fi on; pick a network in Settings → Wi-Fi if none is saved).
 2. Enter the 6-digit code it shows on the site. The browser stays paired; **Forget phones** on the Chromatic revokes every browser.
 
 From the site: edit, pin, and export notes with a real keyboard; set alarms and the timer; change settings; move the Chromatic to another Wi-Fi network (it returns to the old one if the new one fails); show a message on it or flash it to find it. Install the site as an app to get notifications when an alarm or timer rings or the battery runs low (on iPhone, add it to the Home Screen first). Design and security: [docs/phone-link.md](docs/phone-link.md). The site's source is in `cloud/`.
 
-## Restore your Chromatic
+## Games
 
-Use the backup made by the installer **for that same physical unit**. Keep the matching `.json` file beside the `.bin`. On Mac, open **Restore.command** and select the backup. On Windows, drag the backup `.bin` file onto **Restore.bat**. On Linux, run `./Restore.sh path/to/backup.bin`.
+Describe a game on the site's **Games** tab and a model writes it: paste the prompt into your own ChatGPT, use your OpenAI API key, or sign in with ChatGPT (OpenAI's open-source sign-in, a preview). The site runs it in a 160x144 preview using the same engine as the handheld, sends errors back to the model to fix, and **Install** puts it on the Chromatic, where it appears on Home after the built-in apps (up to 32 games). Start pauses a game (Resume / Quit). Games are a JavaScript subset with a small drawing and input API; see [docs/games.md](docs/games.md). The engine is `source/mcu/extra/components/osd/kortamod_game.c`.
+
+## Updates from the site
+
+After the first USB install, newer KortaMod versions install from the site's **Device** tab. The handheld downloads the image into its update slot, checks its SHA-256 and an ECDSA signature, restarts into it, and then copies itself back to the normal app slot; an image that keeps failing to start falls back to the previous version. See [docs/ota.md](docs/ota.md).
+
+## Restore your Chromatic or return to stock
+
+There are two ways back:
+
+- **Restore** writes back the exact backup the installer made of *that* Chromatic, settings and all.
+- **Return to stock** needs no backup: it downloads ModRetro's official firmware (the MCU `0.13.4` image from their [v4.2 release](https://github.com/ModRetro/oss-chromatic-console-mcu/releases/tag/v4.2), checked against a pinned SHA-256; its app is identical to a stock unit's), backs up your Chromatic first, puts back the stock partition table and the official app, clears KortaMod's extra flash areas, and keeps your settings. Afterwards ModRetro's own Update Tool can install newer official releases. Run **ReturnToStock.command** (Mac), **ReturnToStock.bat** (Windows) or `./ReturnToStock.sh` (Linux), or `./KortaMod-Installer --stock`.
+
+To restore a backup, use the one the installer made **for that same physical unit**. Keep the matching `.json` file beside the `.bin`. On Mac, open **Restore.command** and select the backup. On Windows, drag the backup `.bin` file onto **Restore.bat**. On Linux, run `./Restore.sh path/to/backup.bin`.
 
 The equivalent terminal command is:
 
@@ -75,7 +88,7 @@ Backups made with v0.1.0 or v0.1.1 have no identity `.json`. To restore one, add
 bash source/mcu/build.sh
 ```
 
-The build losslessly converts stock RGB565 images to indexed LVGL images before compiling. The output is `source/mcu/build-tree/build/mcu_fw.bin`. `source/mcu/test_core.c` contains host-side behavior tests and `source/mcu/test_model.c` explores every reachable UI state to a fixed depth, checking navigation, storage, brightness, and alert invariants:
+The build losslessly converts stock RGB565 images to indexed LVGL images before compiling. The output is `source/mcu/build-tree/build/mcu_fw.bin`. `source/mcu/test_core.c` contains host-side behavior tests, `source/mcu/test_game.c` tests the games engine (language, errors, a full game, mutation fuzzing), and `source/mcu/test_model.c` explores every reachable UI state to a fixed depth, checking navigation, storage, brightness, and alert invariants:
 
 ```sh
 cc -std=c11 -Wall -Wextra -Werror -I source/mcu/extra/components/osd source/mcu/extra/components/osd/kortamod_core.c source/mcu/test_core.c -o /tmp/kortamod-test
@@ -84,11 +97,11 @@ cc -std=c11 -O2 -I source/mcu/extra/components/osd source/mcu/extra/components/o
 /tmp/kortamod-model
 ```
 
-The companion site's relay logic is tested with `cd cloud && npm install && npm test`.
+The companion site's relay logic is tested with `cd cloud && npm install && npm test`. The site's game preview is the same engine built for WebAssembly by `source/mcu/build_wasm.sh` (clang with the wasm32 target and `wasm-ld`).
 
 `source/fpga/` holds experimental, **unbuilt and unflashed** audio mixer changes against ModRetro's FPGA commit `a01aa375147943cbcd4a41f41585220d55e0c28a`. They are published for development, not included in the installer. Building that project requires the Gowin toolchain and license.
 
-The prebuilt MCU app SHA-256 is `ec6dc63a41fd0d5ae666df3bc2aaae3232820035ed1cd182493d7a534f836749`. The installer pins and verifies this hash. `firmware/partition-table.bin` is used for a read-only compatibility comparison.
+The prebuilt MCU app SHA-256 is `f0edaf20b48f68974145f9bbdaf37b741e66aaf616918f684921f454f28192c1`. The installer pins and verifies this hash. `firmware/partition-table.bin` is used for a read-only compatibility comparison.
 
 ## Work on the installer
 

@@ -15,7 +15,7 @@ function configure() {
   if (configured) return true;
   const pub = process.env.VAPID_PUBLIC_KEY, priv = process.env.VAPID_PRIVATE_KEY;
   if (!pub || !priv) return false;
-  webpush.setVapidDetails("https://kortamod.vercel.app", pub, priv);
+  webpush.setVapidDetails("https://kortamod.app", pub, priv);
   configured = true;
   return true;
 }

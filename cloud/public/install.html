@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<script>
+/* kortamod.vercel.app is the old address: move browsers to kortamod.app and keep
+ * their pairing (passed in the fragment, which never reaches a server). The API
+ * stays on both hosts for Chromatics that still sync to the old one. */
+(function () {
+  var key = "kortamod.token";
+  if (location.hostname === "kortamod.vercel.app") {
+    var t = "";
+    try { t = localStorage.getItem(key) || ""; } catch (e) {}
+    location.replace("https://kortamod.app" + location.pathname + location.search + (/^[0-9a-f]{64}$/.test(t) ? "#kt=" + t : ""));
+    return;
+  }
+  if (location.hash.indexOf("#kt=") === 0) {
+    var moved = location.hash.slice(4);
+    if (/^[0-9a-f]{64}$/.test(moved)) { try { localStorage.setItem(key, moved); } catch (e) {} }
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+})();
+</script>
+<link rel="canonical" href="https://kortamod.app/install">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#c2cd97" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0c140b" media="(prefers-color-scheme: dark)">
+<title>Install KortaMod</title>
+<meta name="description" content="Install KortaMod on your ModRetro Chromatic from this browser.">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/app.css">
+<link rel="stylesheet" href="/install.css">
+</head>
+<body>
+<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="display:none">
+<!-- Phosphor Icons (MIT), as on the rest of the site. -->
+<symbol id="i-device-mobile" viewBox="0 0 256 256"><path d="M176,16H80A24,24,0,0,0,56,40V216a24,24,0,0,0,24,24h96a24,24,0,0,0,24-24V40A24,24,0,0,0,176,16ZM72,64H184V192H72Zm8-32h96a8,8,0,0,1,8,8v8H72V40A8,8,0,0,1,80,32Zm96,192H80a8,8,0,0,1-8-8v-8H184v8A8,8,0,0,1,176,224Z"/></symbol>
+<symbol id="i-check" viewBox="0 0 256 256"><path d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z"/></symbol>
+<symbol id="i-check-circle-fill" viewBox="0 0 256 256"><path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm45.66,85.66-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32Z"/></symbol>
+<symbol id="i-warning-fill" viewBox="0 0 256 256"><path d="M236.8,188.09,149.35,36.22h0a24.76,24.76,0,0,0-42.7,0L19.2,188.09a23.51,23.51,0,0,0,0,23.72A24.35,24.35,0,0,0,40.55,224h174.9a24.35,24.35,0,0,0,21.33-12.19A23.51,23.51,0,0,0,236.8,188.09ZM120,104a8,8,0,0,1,16,0v40a8,8,0,0,1-16,0Zm8,88a12,12,0,1,1,12-12A12,12,0,0,1,128,192Z"/></symbol>
+<symbol id="i-download-simple" viewBox="0 0 256 256"><path d="M224,144v64a8,8,0,0,1-8,8H40a8,8,0,0,1-8-8V144a8,8,0,0,1,16,0v56H208V144a8,8,0,0,1,16,0Zm-101.66,5.66a8,8,0,0,0,11.32,0l40-40a8,8,0,0,0-11.32-11.32L136,124.69V32a8,8,0,0,0-16,0v92.69L93.66,98.34a8,8,0,0,0-11.32,11.32Z"/></symbol>
+<symbol id="i-caret-right" viewBox="0 0 256 256"><path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/></symbol>
+<symbol id="i-arrow-square-out" viewBox="0 0 256 256"><path d="M224,104a8,8,0,0,1-16,0V59.32l-66.33,66.34a8,8,0,0,1-11.32-11.32L196.68,48H152a8,8,0,0,1,0-16h64a8,8,0,0,1,8,8Zm-40,24a8,8,0,0,0-8,8v72H48V80h72a8,8,0,0,0,0-16H48A16,16,0,0,0,32,80V208a16,16,0,0,0,16,16H176a16,16,0,0,0,16-16V136A8,8,0,0,0,184,128Z"/></symbol>
+<symbol id="i-info-fill" viewBox="0 0 256 256"><path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm-4,48a12,12,0,1,1-12,12A12,12,0,0,1,124,72Zm12,112a16,16,0,0,1-16-16V128a8,8,0,0,1,0-16,16,16,0,0,1,16,16v40a8,8,0,0,1,0,16Z"/></symbol>
+<symbol id="i-arrow-counter-clockwise" viewBox="0 0 256 256"><path d="M224,128a96,96,0,0,1-94.71,96H128A95.38,95.38,0,0,1,62.1,197.8a8,8,0,0,1,11-11.63A80,80,0,1,0,71.43,71.39a3.07,3.07,0,0,1-.26.25L44.59,96H72a8,8,0,0,1,0,16H24a8,8,0,0,1-8-8V56a8,8,0,0,1,16,0V85.8L60.25,60A96,96,0,0,1,224,128Z"/></symbol>
+<symbol id="i-x-circle-fill" viewBox="0 0 256 256"><path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm37.66,130.34a8,8,0,0,1-11.32,11.32L128,139.31l-26.34,26.35a8,8,0,0,1-11.32-11.32L116.69,128,90.34,101.66a8,8,0,0,1,11.32-11.32L128,116.69l26.34-26.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/></symbol>
+<symbol id="i-plugs" viewBox="0 0 256 256"><path d="M149.66,138.34a8,8,0,0,0-11.32,0L120,156.69,99.31,136l18.35-18.34a8,8,0,0,0-11.32-11.32L88,124.69,69.66,106.34a8,8,0,0,0-11.32,11.32L64.69,124,41.37,147.31a32,32,0,0,0,0,45.26l5.38,5.37-28.41,28.4a8,8,0,0,0,11.32,11.32l28.4-28.41,5.37,5.38a32,32,0,0,0,45.26,0L132,191.31l6.34,6.35a8,8,0,0,0,11.32-11.32L131.31,168l18.35-18.34A8,8,0,0,0,149.66,138.34Zm-52.29,65a16,16,0,0,1-22.62,0L52.69,181.25a16,16,0,0,1,0-22.62L76,135.31,120.69,180Zm140.29-185a8,8,0,0,0-11.32,0l-28.4,28.41-5.37-5.38a32.05,32.05,0,0,0-45.26,0L124,64.69l-6.34-6.35a8,8,0,0,0-11.32,11.32l80,80a8,8,0,0,0,11.32-11.32L191.31,132l23.32-23.31a32,32,0,0,0,0-45.26l-5.38-5.37,28.41-28.4A8,8,0,0,0,237.66,18.34Zm-34.35,79L180,120.69,135.31,76l23.32-23.31a16,16,0,0,1,22.62,0l22.06,22A16,16,0,0,1,203.31,97.37Z"/></symbol>
+<symbol id="i-lightning" viewBox="0 0 256 256"><path d="M215.79,118.17a8,8,0,0,0-5-5.66L153.18,90.9l14.66-73.33a8,8,0,0,0-13.69-7l-112,120a8,8,0,0,0,3,13l57.63,21.61L88.16,238.43a8,8,0,0,0,13.69,7l112-120A8,8,0,0,0,215.79,118.17ZM109.37,214l10.47-52.38a8,8,0,0,0-5-9.06L62,132.71l84.62-90.66L136.16,94.43a8,8,0,0,0,5,9.06l52.8,19.8Z"/></symbol>
+</svg>
+
+<main class="ins">
+  <div class="ins-ground" aria-hidden="true"><div class="lcd"></div><div class="vignette"></div></div>
+  <div class="ins-wrap">
+    <div class="ins-card" aria-live="polite">
+
+      <section class="view" id="vStart" hidden>
+        <span class="ins-mark"><img src="/icons/icon-192.png" alt="" width="56" height="56"></span>
+        <h1>Install KortaMod</h1>
+        <p class="ins-sub">Plug in your Chromatic and turn it on.</p>
+        <div class="ins-actions"><button class="btn primary lg wide" id="connectBtn">Connect</button></div>
+        <p class="ins-latest" id="latest" hidden></p>
+      </section>
+
+      <section class="view" id="vNoUsb" hidden>
+        <span class="ins-mark"><img src="/icons/icon-192.png" alt="" width="56" height="56"></span>
+        <h1>Use Chrome or Edge</h1>
+        <p class="ins-sub">This browser can't reach USB. Or use the installer app.</p>
+        <div class="ins-actions"><a class="btn primary lg wide" href="https://github.com/zkortam/KortaMod/releases/latest" rel="noopener">Get the installer</a></div>
+      </section>
+
+      <section class="view" id="vDevice" hidden>
+        <div class="ins-device">
+          <span class="well"><svg class="icon"><use href="#i-device-mobile"/></svg></span>
+          <span class="ins-device-text"><b>Chromatic</b><span id="devNow">ModRetro firmware 0.13.4</span></span>
+        </div>
+        <h1 id="devTitle">Ready to install</h1>
+        <p class="ins-sub" id="devSub" hidden></p>
+        <label class="ins-check" id="backupRow" hidden>
+          <span>Back up first</span>
+          <span class="switch"><input type="checkbox" id="backupBox" checked><span></span></span>
+        </label>
+        <div class="ins-actions">
+          <button class="btn primary lg wide" id="goBtn">Install</button>
+          <a class="btn primary lg wide" href="/" id="devPair" hidden>Pair</a>
+          <button class="btn ghost lg wide" id="reinstallBtn" hidden>Reinstall</button>
+        </div>
+        <p class="ins-latest" id="goNote">Backup saved first</p>
+      </section>
+
+      <section class="view" id="vWork" hidden>
+        <h1 id="workTitle">Installing</h1>
+        <p class="ins-sub" id="workSub">Checking</p>
+        <div class="ins-bar" role="progressbar" aria-labelledby="workTitle" aria-valuemin="0" aria-valuemax="100" id="bar"><span id="barFill"></span></div>
+        <ol class="ins-steps" id="steps" hidden>
+          <li data-step="check"></li><li data-step="backup"></li><li data-step="install"><span id="stepInstall">Installing</span></li><li data-step="verify"></li>
+        </ol>
+        <p class="ins-latest">Keep it plugged in</p>
+      </section>
+
+      <section class="view" id="vDone" hidden>
+        <span class="ins-mark ok"><svg class="icon"><use href="#i-check-circle-fill"/></svg></span>
+        <h1 id="doneTitle">Installed</h1>
+        <p class="ins-sub" id="doneSub">On your Chromatic: Menu, then Home › Phone.</p>
+        <div class="ins-actions"><a class="btn primary lg wide" href="/" id="pairNow">Pair</a></div>
+        <p class="ins-latest" id="doneFine" hidden></p>
+        <span id="doneNext" hidden></span>
+      </section>
+
+      <section class="view" id="vError" hidden>
+        <span class="ins-mark bad"><svg class="icon"><use href="#i-warning-fill"/></svg></span>
+        <h1 id="errTitle">Something went wrong</h1>
+        <p class="ins-sub" id="errSub"></p>
+        <div class="ins-actions">
+          <button class="btn primary lg wide" id="retryBtn">Try again</button>
+          <button class="btn ghost lg wide" id="errRestore" hidden>Restore a backup</button>
+        </div>
+        <p class="ins-latest" id="errFine" hidden></p>
+        <details class="ins-details" id="errDetails"><summary>Details</summary><pre id="errLog"></pre></details>
+      </section>
+
+      <section class="view" id="vStock" hidden>
+        <span class="ins-mark"><svg class="icon"><use href="#i-arrow-counter-clockwise"/></svg></span>
+        <h1>Return to stock</h1>
+        <p class="ins-sub">ModRetro's official firmware. Your settings stay.</p>
+        <div class="ins-actions"><button class="btn primary lg wide" id="stockBtn">Connect</button></div>
+        <p class="ins-latest">Backup saved first</p>
+      </section>
+
+      <section class="view" id="vRestore" hidden>
+        <span class="ins-mark"><svg class="icon"><use href="#i-arrow-counter-clockwise"/></svg></span>
+        <h1>Restore a backup</h1>
+        <p class="ins-sub">Choose its .bin and .json.</p>
+        <div class="ins-files" id="files">
+          <div class="ins-file" id="fileBin"><svg class="icon"><use href="#i-download-simple"/></svg><span>.bin</span></div>
+          <div class="ins-file" id="fileJson"><svg class="icon"><use href="#i-download-simple"/></svg><span>.json</span></div>
+        </div>
+        <div class="ins-actions">
+          <label class="btn secondary lg wide ins-pick">Choose files<input type="file" id="pick" accept=".bin,.json" multiple></label>
+          <button class="btn primary lg wide" id="restoreBtn" disabled>Restore</button>
+        </div>
+      </section>
+
+    </div>
+    <nav class="ins-pills" id="pillsStart" aria-label="More">
+      <button class="glass-pill" id="restoreLink"><svg class="icon sm"><use href="#i-download-simple"/></svg>Restore</button>
+      <button class="glass-pill" id="stockLink"><svg class="icon sm"><use href="#i-arrow-counter-clockwise"/></svg>Stock</button>
+    </nav>
+    <nav class="ins-pills one" id="pillsBack" hidden>
+      <button class="glass-pill" id="backBtn"><svg class="icon sm"><use href="#i-caret-right"/></svg>Back</button>
+    </nav>
+    <footer class="ins-foot">
+      <span class="ins-credit"><a href="https://zakariakortam.com" target="_blank" rel="noopener">Made by Zakaria Kortam</a><span aria-hidden="true">·</span><a href="https://github.com/zkortam/KortaMod" target="_blank" rel="noopener">GitHub</a><span aria-hidden="true">·</span><a href="/vendor/esptool-js-LICENSES.txt">Licenses</a></span>
+      <span class="fine">Not affiliated with ModRetro</span>
+    </footer>
+  </div>
+</main>
+<script type="module" src="/install.js"></script>
+</body>
+</html>

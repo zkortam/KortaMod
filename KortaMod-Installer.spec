@@ -3,15 +3,17 @@ from PyInstaller.utils.hooks import collect_all
 
 tool_data, tool_binaries, tool_hidden = collect_all('esptool')
 serial_data, serial_binaries, serial_hidden = collect_all('serial')
+cert_data, cert_binaries, cert_hidden = collect_all('certifi')
 a = Analysis(
     ['installer.py'],
     pathex=[],
-    binaries=tool_binaries + serial_binaries,
-    datas=tool_data + serial_data + [
+    binaries=tool_binaries + serial_binaries + cert_binaries,
+    datas=tool_data + serial_data + cert_data + [
         ('firmware/mcu_fw.bin', 'firmware'),
         ('firmware/partition-table.bin', 'firmware'),
+        ('firmware/partition-table-korta.bin', 'firmware'),
     ],
-    hiddenimports=tool_hidden + serial_hidden,
+    hiddenimports=tool_hidden + serial_hidden + cert_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

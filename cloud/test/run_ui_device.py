@@ -37,7 +37,7 @@ def wait_for(command, pattern, timeout):
     sys.exit("timed out waiting for: " + pattern)
 
 
-SITE = "https://kortamod.vercel.app"
+SITE = "https://kortamod.app"
 wait_for("korta", r"korta wifi online", 60)
 run("korta web on")
 code = wait_for("korta web", r"ready 1 paired \d+ code (\d{6})", 60).group(1)

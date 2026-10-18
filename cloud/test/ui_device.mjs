@@ -1,5 +1,5 @@
 // Drives the deployed site, paired with a real Chromatic, in a phone-sized browser.
-//   node ui_device.mjs https://kortamod.vercel.app 123456 [screenshot-dir]
+//   node ui_device.mjs https://kortamod.app 123456 [screenshot-dir]
 // Needs puppeteer-core and Google Chrome. Restores the alarm it changes and
 // deletes the note it creates.
 import puppeteer from "puppeteer-core";
@@ -42,7 +42,7 @@ await settle(400);
 await page.type("#code", code.slice(0, 3) + " " + code.slice(3));  /* six digits submit on their own */
 await settle(2500);
 check(await visible("#app"), "the right code (typed with a space) pairs");
-check(await page.$eval("#dot", el => el.classList.contains("on")), "the page shows the Chromatic online");
+check(await page.$eval("#who", el => el.dataset.state === "online" || el.dataset.state === "waking"), "the page shows the Chromatic online");
 const before = await api("GET", "/api/state");
 const count = await page.$$eval("#list .note", n => n.length);
 check(count === before.body.state.notes.items.length, `notes list shows the device's ${count} note(s)`);
@@ -62,7 +62,7 @@ try {
   await settle(4000);
   const after = await api("GET", "/api/state");
   check(after.body.state.notes.items[0] === 'UI test "note" - cafe', "a new note reaches the Chromatic, cleaned: " + after.body.state.notes.items[0]);
-  check(/Saved/.test(await status()), "saving says so");
+  check(/saved/i.test(await status()), "saving says so");
   const firstCard = await page.$eval("#list .note .t", el => el.textContent);
   check(firstCard === 'UI test "note" - cafe', "the list shows it at the top");
   await page.click("#list .note");

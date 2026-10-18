@@ -37,8 +37,8 @@ static const char *const INVARIANTS[] = {
     "B-HOME        B pressed at most N times reaches Home from every state, with no loop",
     ("HOLD-B        holding B 1 s reaches Home from every non-keyboard view; on an alarm/timer ring it only\n"
      "              dismisses it (same result as one B tap) and never erases note text"),
-    "HOLD-START    holding Start 1 s opens Find outside the keyboard and alert screens",
-    "HOLD-SELECT   holding Select 1 s toggles the theme exactly once outside the keyboard",
+    "HOLD-START    holding Start 1 s opens Find outside the keyboard, games and alert screens",
+    "HOLD-SELECT   holding Select 1 s toggles the theme exactly once outside the keyboard and games",
     "B-UNDO        B after an opening press (A, Start, Select, Left at Home) returns to the same screen and row",
     "LOCATIONS     every explored screen (and Home page/row) can reach every other one",
     "FOCUS         focus is within the rows the view shows; list-less views keep focus 0",
@@ -69,11 +69,13 @@ enum {
     SYM_HIDE,        /* Menu closes the overlay: korta_hidden, unprime, idle service */
     SYM_WHEEL,       /* volume wheel moves 5% (korta_note_volume) */
     SYM_RESCAN,      /* Wi-Fi rescan returns the networks in reverse order (korta_set_link) */
+    SYM_GAME_OK,     /* the port finished loading a game (korta_arcade_status) */
+    SYM_GAME_ERR,    /* the game stopped with an error */
     SYM_COUNT
 };
 static const char *const SYM_NAME[SYM_COUNT] = {
     "UP", "RIGHT", "DOWN", "LEFT", "A", "B", "START", "SELECT",
-    "<alarm-due>", "<timer-due>", "<menu-hides>", "<wheel>", "<rescan>"
+    "<alarm-due>", "<timer-due>", "<menu-hides>", "<wheel>", "<rescan>", "<game-loaded>", "<game-error>"
 };
 
 /* ------------------------------------------------------------------------ */
@@ -136,6 +138,9 @@ static const char *view_name(int v) {
         case KORTA_SOUND: return "SOUND";
         case KORTA_CONTROLS: return "CONTROLS";
         case KORTA_NOTE_OPEN: return "NOTE";
+        case KORTA_ARCADE: return "GAME";
+        case KORTA_PHONE: return "PHONE";
+        case KORTA_MESSAGE: return "MESSAGE";
         default: return "VIEW?";
     }
 }
@@ -320,6 +325,8 @@ static bool applicable(const Model *m, const Seed *seed, int sym) {
         case SYM_ALARM: return seed->alarm && s->alarms[0].on && s->view != KORTA_ALARM_RING;
         case SYM_WAIT: return seed->wait && s->timer_run && s->timer_count;
         case SYM_RESCAN: return seed->wifi && s->link.count > 1;
+        case SYM_GAME_OK: return s->view == KORTA_ARCADE && s->arcade_phase == KORTA_ARCADE_LOADING;
+        case SYM_GAME_ERR: return s->view == KORTA_ARCADE && s->arcade_phase != KORTA_ARCADE_ERROR;
         /* The wheel bar is the same overlay everywhere; keep it out of the
          * keyboard, whose cursor states dominate the search. */
         case SYM_WHEEL: return s->vol_mode == 0 && s->view != KORTA_KEYBOARD;
@@ -356,6 +363,10 @@ static void step(Model *m, int sym, StepLog *log, Anomaly *an) {
     } else if (sym == SYM_WHEEL) {
         uint8_t v = s->vol_media <= 95 ? (uint8_t)(s->vol_media + 5) : (uint8_t)(s->vol_media - 5);
         korta_note_volume(s, v, s->now_ms + 20);
+        drain(m, log);
+    } else if (sym == SYM_GAME_OK || sym == SYM_GAME_ERR) {
+        korta_arcade_status(s, sym == SYM_GAME_OK ? KORTA_ARCADE_RUNNING : KORTA_ARCADE_ERROR,
+            sym == SYM_GAME_OK ? NULL : "line 12: score is not defined because of a long reason");
         drain(m, log);
     } else if (sym == SYM_RESCAN) {
         KortaLink link = s->link;
@@ -685,7 +696,7 @@ static void check_state(const Model *m, const Where *w, bool render) {
 
     /* SELECTED */
     if (s->view == KORTA_HOME) {
-        if (s->selected >= 2 * KORTA_PAGE_SIZE || app_outcome(s) == OUT_NONE) {
+        if (app_outcome(s) == OUT_NONE) {
             REPORT(w, "SELECTED empty tile", "selected=%u does not open an app", s->selected);
         }
     }
@@ -782,7 +793,7 @@ static void check_edge(const Model *from, const Model *to, int sym, const StepLo
     /* B-UNDO: an opening press is undone by one B, back to the same row. */
     bool opener = sym == KORTA_A || (sym == KORTA_START && b->view == KORTA_QUICK)
         || (sym == KORTA_SELECT && b->view == KORTA_FIND) || (sym == KORTA_LEFT && a->view == KORTA_HOME);
-    if (opener && b->view != a->view && b->view != KORTA_HOME && !override_view(b->view)
+    if (opener && b->view != a->view && b->view != KORTA_HOME && !override_view(b->view) && b->view != KORTA_ARCADE
         && a->view != KORTA_KEYBOARD && a->view != KORTA_CLEAR_CONFIRM && !override_view(a->view)
         && !(sym == KORTA_START && a->view == KORTA_FIND) && !(sym == KORTA_SELECT && a->view == KORTA_QUICK)
         && b->vol_mode != 2) {
@@ -850,18 +861,18 @@ static void check_holds(const Model *m, int seed, int node, bool all_buttons) {
                 REPORT(&w, key, "holding B on %s ends in %s; one tap ends in %s%s", vn, view_name(s->view),
                     view_name(tap.s.view), lost > 0 ? " and text was erased" : "");
             }
-        } else if (b == KORTA_B && a->view != KORTA_KEYBOARD && s->view != KORTA_HOME) {
+        } else if (b == KORTA_B && a->view != KORTA_KEYBOARD && a->view != KORTA_ARCADE && s->view != KORTA_HOME) {
             int lost = (a->note_count && s->note_count) ? (int)a->note_lens[a->note_cur] - (int)s->note_lens[s->note_cur] : 0;
             snprintf(key, sizeof key, "HOLD-B stays in %s from %s%s", view_name(s->view), vn, lost > 0 ? ", erasing note text" : "");
             REPORT(&w, key, "holding B from %s ends in %s%s", vn, view_name(s->view),
                 lost > 0 ? " and erased typed note text" : "");
         }
-        if (b == KORTA_START && a->view != KORTA_KEYBOARD && !override_view(a->view) && a->view != KORTA_FLASH
+        if (b == KORTA_START && a->view != KORTA_KEYBOARD && a->view != KORTA_ARCADE && !override_view(a->view) && a->view != KORTA_FLASH
             && a->vol_mode != 2 && s->view != KORTA_FIND) {
             snprintf(key, sizeof key, "HOLD-START from %s", vn);
             REPORT(&w, key, "holding Start from %s ends in %s, not FIND", vn, view_name(s->view));
         }
-        if (b == KORTA_SELECT && a->view != KORTA_KEYBOARD && a->vol_mode != 2 && s->night == a->night) {
+        if (b == KORTA_SELECT && a->view != KORTA_KEYBOARD && a->view != KORTA_ARCADE && a->vol_mode != 2 && s->night == a->night) {
             snprintf(key, sizeof key, "HOLD-SELECT from %s", vn);
             REPORT(&w, key, "holding Select from %s did not toggle the theme once", vn);
         }
@@ -928,7 +939,8 @@ static void check_home_grid(int seed) {
     HomeGraph g;
     home_graph(root, &g);
     bool app_seen[OUT_LAUNCH + 1] = {false};
-    int apps = 0, pages_needed = (KORTA_APP_COUNT + KORTA_PAGE_SIZE - 1) / KORTA_PAGE_SIZE;
+    int extra = root->game_count > 5 ? root->game_count - 5 : 0;
+    int apps = 0, pages_needed = 2 + (extra + KORTA_PAGE_SIZE - 1) / KORTA_PAGE_SIZE;
     bool page_seen[8] = {false};
     char key[96], msg[200];
     for (int i = 0; i < g.n; i++) {
@@ -940,7 +952,7 @@ static void check_home_grid(int seed) {
             snprintf(key, sizeof key, "HOME-APPS empty tile %d", sel);
             snprintf(msg, sizeof msg, "D-pad reaches tile %d, which opens nothing", sel);
             report_route(key, seed, &g, sel, "", msg);
-        } else if (!app_seen[out]) { app_seen[out] = true; apps++; }
+        } else if (out != KORTA_ARCADE && !app_seen[out]) { app_seen[out] = true; apps++; }
         if (sel / KORTA_PAGE_SIZE < 8) page_seen[sel / KORTA_PAGE_SIZE] = true;
     }
     if (apps != KORTA_APP_COUNT) {
@@ -1216,6 +1228,12 @@ static void seed_alarm(Model *m) {
     korta_load_note(&m->s, full);
 }
 
+static void seed_games(Model *m) {
+    model_init(m);
+    static const char *const names[7] = {"SNAKE", "PONG", "TETRIS", "BREAKOUT", "MAZE", "INVADERS", "FLAPPY"};
+    korta_set_games(&m->s, names, 7);
+    korta_load_note(&m->s, "HI");
+}
 static void seed_full(Model *m) {
     model_init(m);
     korta_apply_prefs(&m->s, 1u | 4u, -5, 23, 30); /* night, QWERTY, 12-hour */
@@ -1341,6 +1359,7 @@ static int new_node(int parent, int sym, int seed, int depth) {
 typedef struct { int states, depth; bool capped; } SeedStats;
 
 static SeedStats explore(int seed) {
+    for (int i = 0; i < 256; i++) app_memo[i] = -2;  /* tiles differ between seeds (games) */
     SeedStats st = {0, 0, false};
     const Seed *sd = &seeds[seed];
     memset(loc_edge, 0, sizeof loc_edge);
@@ -1429,6 +1448,7 @@ int main(int argc, char **argv) {
         {"Wi-Fi idle: 3 networks + saved, 1 note, bright 1", seed_wifi, false, false, true},
         {"Wi-Fi online, GBC game, clock 23:59, 2 notes, bright 12", seed_online, false, false, true},
         {"countdown running, no cart", seed_timer, false, true, false},
+        {"7 installed games (3 Home pages)", seed_games, false, false, false},
     };
     seed_count = (int)(sizeof defs / sizeof defs[0]);
     for (int i = 0; i < seed_count; i++) {
